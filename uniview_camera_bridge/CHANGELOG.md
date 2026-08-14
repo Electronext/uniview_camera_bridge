@@ -1,3 +1,9 @@
+## 1.5.2
+
+- Correct D2/D3 dual-lens image and snapshot mapping: D2 uses image channel 0 and D3 uses image channel 1; PTZ Channel/2 is a separate numbering domain.
+- Add a configurable raw `LampCtrl` change watcher for identifying IR/white/smart illumination fields from native-UI changes.
+- Coalesce queued PTZ velocity updates so stop commands are not delayed behind stale movement, reduce command-loop idle latency, and suspend zoom-position polling during active continuous movement.
+
 ## 1.5.1
 
 - Correct D2/front PTZ image-control mapping to LAPI channel 2 on the dual-lens camera.

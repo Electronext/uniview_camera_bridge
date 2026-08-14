@@ -787,7 +787,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.1"
+    options["addon_version"] = "1.5.2"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -808,7 +808,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.1")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.2")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
@@ -910,6 +910,10 @@ def main() -> int:
     next_rear_zoom_poll = 0.0
     camera_control_poll = int(options.get("camera_control_poll_seconds", 60))
     next_camera_control_poll = time.monotonic() + camera_control_poll
+    lamp_watch_sources = {int(v) for v in options.get("lamp_watch_sources", [])}
+    lamp_watch_seconds = max(0.2, float(options.get("lamp_watch_seconds", 1.0)))
+    next_lamp_watch = 0.0
+    last_lamp_watch: dict[int, str] = {}
     ptz_stop_deadlines: dict[int, float] = {}
     ptz_zoom_poll = max(0.2, float(options.get("ptz_zoom_poll_seconds", 1.0)))
     next_ptz_zoom_poll: dict[int, float] = {
@@ -920,12 +924,30 @@ def main() -> int:
     try:
         while not stop_requested:
             try:
-                command = commands.get(timeout=0.1)
+                command = commands.get(timeout=0.02)
             except queue.Empty:
                 command = None
             try:
                 event_state.expire()
                 if command:
+                    if str(command.get("action", "")) == "camera_ptz":
+                        source_id = int(command.get("source_id", 0))
+                        deferred: list[dict[str, Any]] = []
+                        coalesced = 0
+                        for _ in range(commands.qsize()):
+                            try:
+                                candidate = commands.get_nowait()
+                            except queue.Empty:
+                                break
+                            if str(candidate.get("action", "")) == "camera_ptz" and int(candidate.get("source_id", 0)) == source_id:
+                                command = candidate
+                                coalesced += 1
+                            else:
+                                deferred.append(candidate)
+                        for candidate in deferred:
+                            commands.put(candidate)
+                        if coalesced:
+                            logging.debug("D%d coalesced %d stale PTZ command(s)", source_id, coalesced)
                     action = str(command.get("action", ""))
                     if action.startswith("camera_"):
                         source_id = int(command.get("source_id", 0))
@@ -1029,7 +1051,7 @@ def main() -> int:
 
                 now_mono = time.monotonic()
                 for source_id, deadline in list(next_ptz_zoom_poll.items()):
-                    if now_mono < deadline:
+                    if now_mono < deadline or source_id in ptz_stop_deadlines:
                         continue
                     client = camera_clients.get(source_id)
                     if client is None:
@@ -1046,6 +1068,22 @@ def main() -> int:
                     status = perform_check(camera, options, templates, state, ha)
                     mqtt.publish_status(status)
                     next_check = time.monotonic() + interval
+                if lamp_watch_sources and time.monotonic() >= next_lamp_watch:
+                    for source_id in sorted(lamp_watch_sources):
+                        client = camera_clients.get(source_id)
+                        channel = camera_control_channels.get(source_id)
+                        if client is None or channel is None:
+                            continue
+                        try:
+                            lamp = client.get_lamp(channel)
+                            encoded = json.dumps(lamp, sort_keys=True, separators=(",", ":"))
+                            if last_lamp_watch.get(source_id) != encoded:
+                                logging.info("D%d LampCtrl changed channel=%d: %s", source_id, channel, encoded)
+                                last_lamp_watch[source_id] = encoded
+                        except Exception as exc:
+                            logging.debug("D%d LampCtrl watch failed: %s", source_id, exc)
+                    next_lamp_watch = time.monotonic() + lamp_watch_seconds
+
                 if time.monotonic() >= next_camera_control_poll:
                     for source_id, client in camera_clients.items():
                         channel = camera_control_channels.get(source_id)

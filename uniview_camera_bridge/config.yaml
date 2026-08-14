@@ -1,5 +1,5 @@
 name: Uniview Camera Bridge
-version: 1.5.1
+version: 1.5.2
 slug: uniview_camera_bridge
 description: Bridges Uniview smart events and camera controls into Home Assistant
   while preserving PTZ drift monitoring and motorised-zoom controls.
@@ -81,6 +81,9 @@ options:
   - 192.168.90.5
   event_hold_seconds: 15
   camera_control_poll_seconds: 60
+  lamp_watch_sources:
+  - 2
+  lamp_watch_seconds: 1.0
   event_history_count: 5
   alarm_snapshot_fallback_sources:
   - 5
@@ -99,14 +102,15 @@ options:
     name: Front PTZ
     model: IPC9312LFW-AF28-2X4
     enabled: true
-    image_control_channel: 2
-    snapshot_channel: 2
+    image_control_channel: 0
+    snapshot_channel: 0
     ptz_enabled: true
   - source_id: 3
     name: Front Static
     model: IPC9312LFW-AF28-2X4
     enabled: true
     image_control_channel: 1
+    snapshot_channel: 1
   - source_id: 4
     name: Front Garden
     model: IPC324SB-DF28K-I0
@@ -197,6 +201,9 @@ schema:
   - str
   event_hold_seconds: int(1,3600)
   camera_control_poll_seconds: int(10,3600)
+  lamp_watch_sources:
+  - int(1,255)
+  lamp_watch_seconds: float(0.2,60.0)?
   event_history_count: int(1,20)
   alarm_snapshot_fallback_sources:
   - int(1,255)
