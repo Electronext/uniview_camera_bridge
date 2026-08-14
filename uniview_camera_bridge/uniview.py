@@ -239,13 +239,39 @@ class UniviewCamera:
             "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
         )
         root = ET.fromstring(response.content)
-        profiles = [
-            element.attrib["token"]
-            for element in root.iter()
-            if _localname(element.tag) == "Profiles" and element.attrib.get("token")
-        ]
-        if not profiles:
+        profile_info: list[tuple[str, bool, str | None]] = []
+        for element in root.iter():
+            if _localname(element.tag) != "Profiles" or not element.attrib.get("token"):
+                continue
+            profile_token = element.attrib["token"]
+            ptz_config_token: str | None = None
+            for child in element.iter():
+                if _localname(child.tag) == "PTZConfiguration":
+                    ptz_config_token = child.attrib.get("token")
+                    break
+            profile_info.append((profile_token, ptz_config_token is not None, ptz_config_token))
+
+        if not profile_info:
             raise RuntimeError("Camera returned no ONVIF media profiles")
+
+        ptz_profiles = [token for token, has_ptz, _config in profile_info if has_ptz]
+        fallback_profiles = [token for token, has_ptz, _config in profile_info if not has_ptz]
+        profiles = ptz_profiles + fallback_profiles
+        logging.debug(
+            "ONVIF media profiles: %s",
+            "; ".join(
+                f"{token} PTZ={'yes' if has_ptz else 'no'}"
+                + (f" config={config}" if config else "")
+                for token, has_ptz, config in profile_info
+            ),
+        )
+        if ptz_profiles:
+            logging.info("Selected ONVIF PTZ profile: %s", ptz_profiles[0])
+        else:
+            logging.warning(
+                "No media profile advertises a PTZConfiguration; falling back to first profile %s",
+                profiles[0],
+            )
 
         self._onvif_ptz_url = ptz_url
         self._onvif_profiles = profiles
