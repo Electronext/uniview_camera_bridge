@@ -1,0 +1,26 @@
+name: Fix PTZ zoom schema compatibility
+
+on:
+  push:
+    branches:
+      - feature/ptz-capabilities-and-front-zoom
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/ptz-capabilities-and-front-zoom
+      - run: python tools/fix_ptz_zoom_schema.py
+      - run: git diff --check
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add uniview_camera_bridge/config.yaml
+          git commit -m "Make PTZ zoom poll option upgrade-compatible" || exit 0
+          git push
