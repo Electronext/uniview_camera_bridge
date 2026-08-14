@@ -174,7 +174,7 @@ schema:
   - name: str
     number: int(0,255)
   ptz_safety_timeout_seconds: float(0.5,10.0)
-  ptz_zoom_poll_seconds: float(0.2,60.0)
+  ptz_zoom_poll_seconds: float(0.2,60.0)?
   rear_zoom_enabled: bool
   rear_zoom_device_name: str
   rear_zoom_host: str
