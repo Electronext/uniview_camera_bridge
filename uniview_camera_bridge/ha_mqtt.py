@@ -50,6 +50,7 @@ class MQTTDiscovery:
         self.discovery_published = False
         self._discovery_thread: threading.Thread | None = None
         self._published_config_count = 0
+        self._camera_controls: dict[int, dict[str, Any]] = {}
 
     def start(self) -> None:
         if not self.enabled:
@@ -164,6 +165,13 @@ class MQTTDiscovery:
                         logging.warning("Ignoring invalid D%d PTZ payload %r: %s", source_id, payload, exc)
                     else:
                         self.commands.put({"action": "camera_ptz", "source_id": source_id, **value})
+                elif action == "zoom" and len(parts) >= 4 and parts[3] == "set":
+                    try:
+                        value = float(payload)
+                    except ValueError:
+                        logging.warning("Ignoring invalid D%d zoom percentage MQTT payload %r", source_id, payload)
+                    else:
+                        self.commands.put({"action": "camera_zoom_set", "source_id": source_id, "percent": value})
         elif suffix == "rear_zoom/preset":
             self.commands.put({"action": "rear_zoom_preset", "name": payload})
         elif suffix == "rear_zoom/in":
@@ -397,6 +405,7 @@ class MQTTDiscovery:
                 "source_id": source_id,
                 "name": str(item.get("name") or f"Camera D{source_id}"),
                 "model": str(item.get("model") or "Uniview camera"),
+                "ptz_enabled": bool(item.get("ptz_enabled", False)),
             })
         return result
 
@@ -530,6 +539,19 @@ class MQTTDiscovery:
                     "state_off": "OFF",
                     "icon": "mdi:shield-home-outline",
                 })
+                if caps.get("ptz_zoom"):
+                    self._camera_config(camera, "number", "zoom", {
+                        "name": "Zoom",
+                        "state_topic": f"{event_base}/controls",
+                        "value_template": "{{ value_json.zoom_percent if value_json.zoom_percent is not none else none }}",
+                        "command_topic": f"{self.base}/command/camera/D{source_id}/zoom/set",
+                        "min": 0,
+                        "max": 100,
+                        "step": 1,
+                        "mode": "slider",
+                        "unit_of_measurement": "%",
+                        "icon": "mdi:magnify",
+                    })
             if caps.get("illumination"):
                 self._camera_config(camera, "switch", "illumination", {
                     "name": "Illumination",
@@ -575,7 +597,11 @@ class MQTTDiscovery:
     def publish_camera_controls(self, source_id: int, state: dict[str, Any]) -> None:
         if not self.enabled:
             return
-        self.publish_raw(f"{self.base}/camera/D{int(source_id)}/controls", json.dumps(state, separators=(",", ":")), retain=True)
+        source_id = int(source_id)
+        merged = dict(self._camera_controls.get(source_id, {}))
+        merged.update(state)
+        self._camera_controls[source_id] = merged
+        self.publish_raw(f"{self.base}/camera/D{source_id}/controls", json.dumps(merged, separators=(",", ":")), retain=True)
 
     def publish_camera_event_message(self, event: dict[str, Any]) -> None:
         """Publish a non-retained structured event stream for future consumers."""

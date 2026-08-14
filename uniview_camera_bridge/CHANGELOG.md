@@ -1,3 +1,11 @@
+## 1.5.0
+
+- Probe and log ONVIF PTZ `GetConfigurationOptions` spaces/ranges for PTZ-enabled cameras.
+- Expose D2/front-PTZ absolute optical zoom as a Home Assistant MQTT `number` slider with actual camera position feedback.
+- Poll PTZ zoom position independently (default 1 s) so wheel/button/preset movements are reflected back into Home Assistant.
+- Merge partial camera-control state publications so zoom/day-night/illumination/auto-guard fields do not erase one another.
+- Preserve `ptz_enabled` in MQTT discovery camera metadata so PTZ-specific entities are discovered reliably.
+
 ## 1.4.2
 
 - Select an ONVIF media profile that actually advertises a PTZConfiguration before sending PTZ commands.

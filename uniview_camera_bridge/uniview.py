@@ -35,6 +35,7 @@ class UniviewCamera:
         self.session = requests.Session()
         self._onvif_ptz_url: str | None = None
         self._onvif_profiles: list[str] | None = None
+        self._onvif_profile_configs: dict[str, str | None] = {}
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
         response = self.session.request(
@@ -275,7 +276,66 @@ class UniviewCamera:
 
         self._onvif_ptz_url = ptz_url
         self._onvif_profiles = profiles
+        self._onvif_profile_configs = {token: config for token, _has_ptz, config in profile_info}
         return ptz_url, profiles
+
+    @staticmethod
+    def _range_values(element: ET.Element) -> dict[str, float] | None:
+        values: dict[str, float] = {}
+        for child in element:
+            name = _localname(child.tag)
+            if name not in ("Min", "Max") or child.text is None:
+                continue
+            try:
+                values[name.lower()] = float(child.text)
+            except ValueError:
+                pass
+        return values if values else None
+
+    def get_ptz_configuration_options(self, profile: str | None = None) -> dict[str, Any]:
+        """Return the ONVIF PTZ spaces/ranges advertised for the selected profile."""
+        ptz_url, profiles = self._discover_onvif()
+        profile_token = profile or profiles[0]
+        config_token = self._onvif_profile_configs.get(profile_token)
+        if not config_token:
+            raise RuntimeError(f"ONVIF profile {profile_token} has no PTZConfiguration token")
+        body = f'''<tptz:GetConfigurationOptions xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl">
+<tptz:ConfigurationToken>{config_token}</tptz:ConfigurationToken>
+</tptz:GetConfigurationOptions>'''
+        response = self._soap(
+            ptz_url,
+            body,
+            "http://www.onvif.org/ver20/ptz/wsdl/GetConfigurationOptions",
+        )
+        root = ET.fromstring(response.content)
+        result: dict[str, Any] = {
+            "profile": profile_token,
+            "configuration_token": config_token,
+            "spaces": {},
+        }
+        spaces = next((e for e in root.iter() if _localname(e.tag) == "Spaces"), None)
+        if spaces is not None:
+            for space in spaces:
+                name = _localname(space.tag)
+                item: dict[str, Any] = {}
+                for child in space:
+                    child_name = _localname(child.tag)
+                    if child_name == "URI" and child.text:
+                        item["uri"] = child.text.strip()
+                    elif child_name in ("XRange", "YRange"):
+                        values = self._range_values(child)
+                        if values:
+                            item[child_name[0].lower()] = values
+                result["spaces"].setdefault(name, []).append(item)
+        timeout = next((e for e in root.iter() if _localname(e.tag) == "PTZTimeout"), None)
+        if timeout is not None:
+            timeout_values = {}
+            for child in timeout:
+                if child.text:
+                    timeout_values[_localname(child.tag).lower()] = child.text.strip()
+            if timeout_values:
+                result["timeout"] = timeout_values
+        return result
 
     def get_zoom(self, profile: str | None = None) -> float:
         ptz_url, profiles = self._discover_onvif()
