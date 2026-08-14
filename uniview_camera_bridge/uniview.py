@@ -12,6 +12,8 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 ZOOM_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace"
+PAN_TILT_VELOCITY_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"
+ZOOM_VELOCITY_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"
 
 
 def _localname(tag: str) -> str:
@@ -121,6 +123,16 @@ class UniviewCamera:
         self._lapi_data(response)
         return bool(enabled)
 
+    def get_auto_guard(self) -> bool:
+        response = self._request("GET", "/LAPI/V1.0/Channel/2/PTZ/Guard")
+        data = self._lapi_data(response)
+        if not isinstance(data, dict):
+            raise RuntimeError("Auto-guard status did not return an object")
+        value = data.get("Enabled", data.get("Enable"))
+        if value is None:
+            raise RuntimeError("Auto-guard status has no Enabled/Enable field")
+        return bool(value)
+
     def set_auto_guard(self, enabled: bool, preset: int, guard_time: int) -> None:
         payload = {
             "Enabled": 1 if enabled else 0,
@@ -128,7 +140,8 @@ class UniviewCamera:
             "Param": preset,
             "Time": guard_time,
         }
-        self._request("PUT", "/LAPI/V1.0/Channel/2/PTZ/Guard", json=payload)
+        response = self._request("PUT", "/LAPI/V1.0/Channel/2/PTZ/Guard", json=payload)
+        self._lapi_data(response)
 
     def rectify(self) -> None:
         self._request("PUT", "/LAPI/V1.0/Channels/2/PTZ/Rectify")
@@ -260,3 +273,38 @@ class UniviewCamera:
             body,
             "http://www.onvif.org/ver20/ptz/wsdl/AbsoluteMove",
         )
+
+    def continuous_move(
+        self,
+        pan: float = 0.0,
+        tilt: float = 0.0,
+        zoom: float = 0.0,
+        profile: str | None = None,
+    ) -> None:
+        pan = max(-1.0, min(1.0, float(pan)))
+        tilt = max(-1.0, min(1.0, float(tilt)))
+        zoom = max(-1.0, min(1.0, float(zoom)))
+        if abs(pan) < 1e-6 and abs(tilt) < 1e-6 and abs(zoom) < 1e-6:
+            self.stop_move(profile=profile)
+            return
+        ptz_url, profiles = self._discover_onvif()
+        token = profile or profiles[0]
+        body = f'''<tptz:ContinuousMove xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+<tptz:ProfileToken>{token}</tptz:ProfileToken>
+<tptz:Velocity>
+<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_TILT_VELOCITY_SPACE}"/>
+<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VELOCITY_SPACE}"/>
+</tptz:Velocity>
+</tptz:ContinuousMove>'''
+        self._soap(ptz_url, body, "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove")
+
+    def stop_move(self, profile: str | None = None) -> None:
+        ptz_url, profiles = self._discover_onvif()
+        token = profile or profiles[0]
+        body = f'''<tptz:Stop xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl">
+<tptz:ProfileToken>{token}</tptz:ProfileToken>
+<tptz:PanTilt>true</tptz:PanTilt>
+<tptz:Zoom>true</tptz:Zoom>
+</tptz:Stop>'''
+        self._soap(ptz_url, body, "http://www.onvif.org/ver20/ptz/wsdl/Stop")
+

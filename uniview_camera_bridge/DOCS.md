@@ -1,4 +1,4 @@
-# Uniview PTZ Drift Monitor
+# Uniview Camera Bridge Monitor
 
 The add-on periodically matches a camera snapshot against reference images, records positional history, exposes the result to Home Assistant, and performs guarded recovery actions when drift persists.
 
