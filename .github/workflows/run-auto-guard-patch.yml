@@ -1,0 +1,27 @@
+name: Run auto-guard patch
+
+on:
+  push:
+    branches: [feature/d2-proportional-ptz]
+    paths:
+      - .github/workflows/run-auto-guard-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/d2-proportional-ptz
+      - run: python tools/add_auto_guard_control.py
+      - run: python -m compileall -q uniview_camera_bridge
+      - run: find uniview_camera_bridge -type d -name __pycache__ -prune -exec rm -rf {} +
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uniview_camera_bridge
+          git commit -m "Add D2 auto-guard control"
+          git push origin feature/d2-proportional-ptz
