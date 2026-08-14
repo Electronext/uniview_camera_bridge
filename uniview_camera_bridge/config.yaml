@@ -1,5 +1,5 @@
 name: Uniview Camera Bridge
-version: 1.4.2
+version: 1.5.0
 slug: uniview_camera_bridge
 description: Bridges Uniview smart events and camera controls into Home Assistant
   while preserving PTZ drift monitoring and motorised-zoom controls.
@@ -55,6 +55,7 @@ options:
   ptz_busy_fail_safe: false
   ptz_presets: []
   ptz_safety_timeout_seconds: 3.0
+  ptz_zoom_poll_seconds: 1.0
   rear_zoom_enabled: true
   rear_zoom_device_name: Rear Uniview Camera
   rear_zoom_host: 192.168.90.5:30050
@@ -173,6 +174,7 @@ schema:
   - name: str
     number: int(0,255)
   ptz_safety_timeout_seconds: float(0.5,10.0)
+  ptz_zoom_poll_seconds: float(0.2,60.0)
   rear_zoom_enabled: bool
   rear_zoom_device_name: str
   rear_zoom_host: str
