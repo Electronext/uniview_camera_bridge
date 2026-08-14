@@ -154,6 +154,19 @@ class MQTTDiscovery:
                     self.commands.put({"action": "camera_day_night", "source_id": source_id, "mode": payload})
                 elif action == "illumination":
                     self.commands.put({"action": "camera_illumination", "source_id": source_id, "enabled": payload.strip().upper() in ("ON", "1", "TRUE")})
+                elif action == "illumination_type":
+                    self.commands.put({"action": "camera_illumination_type", "source_id": source_id, "value": payload})
+                elif action == "white_light_mode":
+                    self.commands.put({"action": "camera_white_light_mode", "source_id": source_id, "value": payload})
+                elif action == "infrared_mode":
+                    self.commands.put({"action": "camera_infrared_mode", "source_id": source_id, "value": payload})
+                elif action in ("white_light_level", "infrared_near_level", "infrared_far_level"):
+                    try:
+                        value = float(payload)
+                    except ValueError:
+                        logging.warning("Ignoring invalid D%d illumination level payload %r", source_id, payload)
+                    else:
+                        self.commands.put({"action": f"camera_{action}", "source_id": source_id, "value": value})
                 elif action == "auto_guard":
                     self.commands.put({"action": "camera_auto_guard", "source_id": source_id, "enabled": payload.strip().upper() in ("ON", "1", "TRUE")})
                 elif action == "ptz":
@@ -554,7 +567,7 @@ class MQTTDiscovery:
                     })
             if caps.get("illumination"):
                 self._camera_config(camera, "switch", "illumination", {
-                    "name": "Illumination",
+                    "name": "Smart illumination",
                     "state_topic": f"{event_base}/controls",
                     "value_template": "{{ 'ON' if value_json.illumination else 'OFF' }}",
                     "command_topic": f"{self.base}/command/camera/D{source_id}/illumination",
@@ -564,6 +577,48 @@ class MQTTDiscovery:
                     "state_off": "OFF",
                     "icon": "mdi:lightbulb-night-outline",
                 })
+                if caps.get("illumination_detailed"):
+                    controls_topic = f"{event_base}/controls"
+                    self._camera_config(camera, "select", "illumination_type", {
+                        "name": "Illumination type",
+                        "state_topic": controls_topic,
+                        "value_template": "{{ value_json.illumination_type if value_json.illumination_type else none }}",
+                        "command_topic": f"{self.base}/command/camera/D{source_id}/illumination_type",
+                        "options": ["White Light", "Infrared"],
+                        "icon": "mdi:lightbulb-group-outline",
+                    })
+                    self._camera_config(camera, "select", "white_light_mode", {
+                        "name": "White light control mode",
+                        "state_topic": controls_topic,
+                        "value_template": "{{ value_json.white_light_mode if value_json.illumination_type == 'White Light' and value_json.white_light_mode else none }}",
+                        "command_topic": f"{self.base}/command/camera/D{source_id}/white_light_mode",
+                        "options": ["Manual", "Manual-Always On"],
+                        "icon": "mdi:lightbulb-on-outline",
+                    })
+                    self._camera_config(camera, "select", "infrared_mode", {
+                        "name": "Infrared control mode",
+                        "state_topic": controls_topic,
+                        "value_template": "{{ value_json.infrared_mode if value_json.illumination_type == 'Infrared' and value_json.infrared_mode else none }}",
+                        "command_topic": f"{self.base}/command/camera/D{source_id}/infrared_mode",
+                        "options": ["Global Mode", "Overexposure Restrain", "Manual"],
+                        "icon": "mdi:weather-night",
+                    })
+                    for object_id, name, field, icon in (
+                        ("white_light_level", "White light level", "white_light_level", "mdi:brightness-6"),
+                        ("infrared_near_level", "Infrared near level", "infrared_near_level", "mdi:brightness-5"),
+                        ("infrared_far_level", "Infrared far level", "infrared_far_level", "mdi:brightness-7"),
+                    ):
+                        self._camera_config(camera, "number", object_id, {
+                            "name": name,
+                            "state_topic": controls_topic,
+                            "value_template": "{{ value_json.%s if value_json.%s is not none else none }}" % (field, field),
+                            "command_topic": f"{self.base}/command/camera/D{source_id}/{object_id}",
+                            "min": 0,
+                            "max": 1000,
+                            "step": 1,
+                            "mode": "slider",
+                            "icon": icon,
+                        })
 
             self._camera_config(camera, "image", "last_object_crop", {
                 "name": "Last object crop",

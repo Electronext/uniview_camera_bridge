@@ -45,6 +45,11 @@ class UniviewCamera:
             timeout=self.timeout,
             **kwargs,
         )
+        if not response.ok:
+            logging.error(
+                "LAPI HTTP error method=%s path=%s status=%s body=%s",
+                method, path, response.status_code, response.text[:4000].replace("\n", " "),
+            )
         response.raise_for_status()
         return response
 
@@ -84,22 +89,33 @@ class UniviewCamera:
             raise RuntimeError("Exposure settings did not return an object")
         return data
 
-    def get_day_night_mode(self, channel: int) -> str:
-        exposure = self.get_exposure(channel)
+    def get_private_exposure(self, channel: int) -> dict[str, Any]:
+        response = self._request("GET", f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/")
+        data = self._lapi_data(response)
+        if not isinstance(data, dict):
+            raise RuntimeError("Private exposure settings did not return an object")
+        return data
+
+    def get_day_night_mode(self, channel: int, private: bool = False) -> str:
+        exposure = self.get_private_exposure(channel) if private else self.get_exposure(channel)
         day_night = exposure.get("DayNight") or {}
         mode = int(day_night.get("Mode"))
         return {0: "Auto", 1: "Day", 2: "Night"}.get(mode, f"Unknown ({mode})")
 
-    def set_day_night_mode(self, channel: int, mode: str) -> str:
+    def set_day_night_mode(self, channel: int, mode: str, private: bool = False) -> str:
         values = {"auto": 0, "day": 1, "night": 2}
         key = str(mode).strip().lower()
         if key not in values:
             raise ValueError(f"Unsupported day/night mode: {mode}")
-        exposure = self.get_exposure(channel)
+        exposure = self.get_private_exposure(channel) if private else self.get_exposure(channel)
         day_night = dict(exposure.get("DayNight") or {})
         day_night["Mode"] = values[key]
         exposure["DayNight"] = day_night
-        response = self._request("PUT", f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Exposure", json=exposure)
+        path = (
+            f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/"
+            if private else f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Exposure"
+        )
+        response = self._request("PUT", path, json=exposure)
         self._lapi_data(response)
         return {0: "Auto", 1: "Day", 2: "Night"}[values[key]]
 
@@ -108,6 +124,13 @@ class UniviewCamera:
         data = self._lapi_data(response)
         if not isinstance(data, dict):
             raise RuntimeError("Lamp control did not return an object")
+        return data
+
+    def set_lamp(self, channel: int, **updates: Any) -> dict[str, Any]:
+        data = self.get_lamp(channel)
+        data.update(updates)
+        response = self._request("PUT", f"/LAPI/V1.0/Channels/{channel}/Image/LampCtrl", json=data)
+        self._lapi_data(response)
         return data
 
     def get_lamp_enabled(self, channel: int) -> bool:
@@ -121,8 +144,7 @@ class UniviewCamera:
         data = self.get_lamp(channel)
         field = "Enabled" if "Enabled" in data else "Enable" if "Enable" in data else "Enabled"
         data[field] = 1 if enabled else 0
-        response = self._request("PUT", f"/LAPI/V1.0/Channels/{channel}/Image/LampCtrl", json=data)
-        self._lapi_data(response)
+        self.set_lamp(channel, **{field: 1 if enabled else 0})
         return bool(enabled)
 
     def get_auto_guard(self) -> bool:

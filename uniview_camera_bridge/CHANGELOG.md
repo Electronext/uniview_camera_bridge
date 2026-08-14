@@ -1,3 +1,10 @@
+## 1.5.3
+
+- Correct D2 dual-lens addressing from native-UI packet captures and a known-good legacy snapshot client: D2 image controls and snapshots use channel 2; D3 uses channel 1.
+- Use D2's native `Image/Advanced/Private/Exposure/` endpoint for reliable Auto/Day/Night control.
+- Add D2 detailed smart-illumination controls discovered from native-UI traffic: White Light/Infrared type, separate white-light and infrared control-mode selects, white-light level, and infrared near/far levels.
+- Slow the diagnostic LampCtrl watcher to 5 seconds and include LAPI HTTP error response bodies in diagnostics.
+
 ## 1.5.2
 
 - Correct D2/D3 dual-lens image and snapshot mapping: D2 uses image channel 0 and D3 uses image channel 1; PTZ Channel/2 is a separate numbering domain.

@@ -588,11 +588,13 @@ def probe_camera_controls(
 
             selected = channel
             try:
-                exposure = client.get_exposure(channel)
+                private_exposure = source_id == 2
+                exposure = client.get_private_exposure(channel) if private_exposure else client.get_exposure(channel)
                 day_night = exposure.get("DayNight") if isinstance(exposure, dict) else None
                 if isinstance(day_night, dict) and "Mode" in day_night:
                     found["day_night"] = True
-                    found["day_night_mode"] = client.get_day_night_mode(channel)
+                    found["private_exposure"] = private_exposure
+                    found["day_night_mode"] = client.get_day_night_mode(channel, private=private_exposure)
             except Exception as exc:
                 logging.debug("D%d day/night probe failed on channel %d: %s", source_id, channel, exc)
 
@@ -602,6 +604,9 @@ def probe_camera_controls(
                 if value is not None:
                     found["illumination_enabled"] = bool(value)
                     found["illumination"] = True
+                    if source_id == 2:
+                        found["illumination_detailed"] = True
+                        found.update(lamp_control_state(lamp))
                 logging.debug(
                     "D%d channel %d LampCtrl=%s",
                     source_id, channel, json.dumps(lamp, sort_keys=True, separators=(",", ":")),
@@ -625,6 +630,24 @@ def probe_camera_controls(
             source_id, selected, mapping_source, found["day_night"], found["illumination"],
         )
     return capabilities, channels
+
+
+def lamp_control_state(lamp: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(lamp.get("Enabled", lamp.get("Enable", 0)))
+    lamp_type = int(lamp.get("Type", 0) or 0)
+    mode = int(lamp.get("Mode", -1) if lamp.get("Mode") is not None else -1)
+    illumination_type = {1: "White Light", 2: "Infrared"}.get(lamp_type)
+    white_mode = {3: "Manual", 7: "Manual-Always On"}.get(mode) if lamp_type == 1 else None
+    infrared_mode = {0: "Global Mode", 1: "Overexposure Restrain", 3: "Manual"}.get(mode) if lamp_type == 2 else None
+    return {
+        "illumination": enabled,
+        "illumination_type": illumination_type,
+        "white_light_mode": white_mode,
+        "infrared_mode": infrared_mode,
+        "white_light_level": int(lamp.get("NearLevel", 0) or 0) if lamp_type == 1 else None,
+        "infrared_near_level": int(lamp.get("NearLevel", 0) or 0) if lamp_type == 2 else None,
+        "infrared_far_level": int(lamp.get("FarLevel", 0) or 0) if lamp_type == 2 else None,
+    }
 
 
 def capture_camera_snapshot(source_id: int, client: UniviewCamera, preferred_channel: int = 1) -> tuple[bytes, int]:
@@ -787,7 +810,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.2"
+    options["addon_version"] = "1.5.3"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -808,7 +831,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.2")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.3")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
@@ -848,12 +871,18 @@ def main() -> int:
         logging.warning("D2 auto-guard status probe failed: %s", exc)
         camera_caps.setdefault(2, {})["auto_guard_enabled"] = None
     for source_id, caps in camera_caps.items():
-        mqtt.publish_camera_controls(source_id, {
+        control_state = {
             "day_night_mode": caps.get("day_night_mode"),
             "illumination": caps.get("illumination_enabled") if caps.get("illumination") else None,
             "auto_guard": caps.get("auto_guard_enabled"),
             "zoom_percent": caps.get("zoom_percent") if caps.get("ptz_zoom") else None,
-        })
+        }
+        if caps.get("illumination_detailed"):
+            control_state.update({key: caps.get(key) for key in (
+                "illumination_type", "white_light_mode", "infrared_mode",
+                "white_light_level", "infrared_near_level", "infrared_far_level",
+            )})
+        mqtt.publish_camera_controls(source_id, control_state)
     fallback_sources = {int(v) for v in options.get("alarm_snapshot_fallback_sources", [5])}
     fallback_host = str(options.get("alarm_snapshot_host", "192.168.90.5")).strip()
     fallback_port_base = int(options.get("alarm_snapshot_port_base", 30000))
@@ -969,7 +998,8 @@ def main() -> int:
                             if channel is None or not camera_caps.get(source_id, {}).get("day_night"):
                                 logging.warning("D%d does not expose day/night control", source_id)
                             else:
-                                mode = client.set_day_night_mode(channel, str(command.get("mode", "")))
+                                private_exposure = bool(camera_caps[source_id].get("private_exposure"))
+                                mode = client.set_day_night_mode(channel, str(command.get("mode", "")), private=private_exposure)
                                 camera_caps[source_id]["day_night_mode"] = mode
                                 mqtt.publish_camera_controls(source_id, {"day_night_mode": mode, "illumination": camera_caps[source_id].get("illumination_enabled")})
                                 logging.info("D%d day/night mode -> %s", source_id, mode)
@@ -980,8 +1010,60 @@ def main() -> int:
                             else:
                                 enabled = client.set_lamp_enabled(channel, bool(command.get("enabled")))
                                 camera_caps[source_id]["illumination_enabled"] = enabled
-                                mqtt.publish_camera_controls(source_id, {"day_night_mode": camera_caps[source_id].get("day_night_mode"), "illumination": enabled})
+                                control_state = {"illumination": enabled}
+                                if camera_caps[source_id].get("illumination_detailed"):
+                                    lamp = client.get_lamp(channel)
+                                    detailed = lamp_control_state(lamp)
+                                    camera_caps[source_id].update(detailed)
+                                    control_state.update(detailed)
+                                mqtt.publish_camera_controls(source_id, control_state)
                                 logging.info("D%d illumination -> %s", source_id, "on" if enabled else "off")
+                        elif action in ("camera_illumination_type", "camera_white_light_mode", "camera_infrared_mode", "camera_white_light_level", "camera_infrared_near_level", "camera_infrared_far_level"):
+                            channel = camera_control_channels.get(source_id)
+                            if channel is None or not camera_caps.get(source_id, {}).get("illumination_detailed"):
+                                logging.warning("D%d does not expose detailed illumination control", source_id)
+                            else:
+                                updates: dict[str, Any] = {}
+                                if action == "camera_illumination_type":
+                                    value = str(command.get("value", ""))
+                                    if value == "White Light":
+                                        current = client.get_lamp(channel)
+                                        mode = int(current.get("Mode", 3) or 3)
+                                        updates = {"Type": 1, "Mode": mode if mode in (3, 7) else 3}
+                                    elif value == "Infrared":
+                                        current = client.get_lamp(channel)
+                                        mode = int(current.get("Mode", 0) or 0)
+                                        updates = {"Type": 2, "Mode": mode if mode in (0, 1, 3) else 0}
+                                    else:
+                                        raise ValueError(f"Unsupported illumination type {value!r}")
+                                elif action == "camera_white_light_mode":
+                                    modes = {"Manual": 3, "Manual-Always On": 7}
+                                    value = str(command.get("value", ""))
+                                    if value not in modes:
+                                        raise ValueError(f"Unsupported white-light mode {value!r}")
+                                    updates = {"Type": 1, "Mode": modes[value]}
+                                elif action == "camera_infrared_mode":
+                                    modes = {"Global Mode": 0, "Overexposure Restrain": 1, "Manual": 3}
+                                    value = str(command.get("value", ""))
+                                    if value not in modes:
+                                        raise ValueError(f"Unsupported infrared mode {value!r}")
+                                    updates = {"Type": 2, "Mode": modes[value]}
+                                else:
+                                    level = int(round(float(command.get("value", 0))))
+                                    if not 0 <= level <= 1000:
+                                        raise ValueError(f"Illumination level must be 0..1000, got {level}")
+                                    if action == "camera_white_light_level":
+                                        updates = {"Type": 1, "NearLevel": level}
+                                    elif action == "camera_infrared_near_level":
+                                        updates = {"Type": 2, "Mode": 3, "NearLevel": level}
+                                    else:
+                                        updates = {"Type": 2, "Mode": 3, "FarLevel": level}
+                                lamp = client.set_lamp(channel, **updates)
+                                detailed = lamp_control_state(lamp)
+                                camera_caps[source_id].update(detailed)
+                                camera_caps[source_id]["illumination_enabled"] = detailed["illumination"]
+                                mqtt.publish_camera_controls(source_id, detailed)
+                                logging.info("D%d detailed illumination update %s -> %s", source_id, action, updates)
                         elif action == "camera_auto_guard":
                             camera_def = next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), None)
                             if source_id != 2 or not camera_def or not bool(camera_def.get("ptz_enabled", False)):
@@ -1092,19 +1174,30 @@ def main() -> int:
                             continue
                         try:
                             if caps.get("day_night"):
-                                caps["day_night_mode"] = client.get_day_night_mode(channel)
+                                caps["day_night_mode"] = client.get_day_night_mode(channel, private=bool(caps.get("private_exposure")))
                             if caps.get("illumination"):
-                                caps["illumination_enabled"] = client.get_lamp_enabled(channel)
+                                if caps.get("illumination_detailed"):
+                                    detailed = lamp_control_state(client.get_lamp(channel))
+                                    caps.update(detailed)
+                                    caps["illumination_enabled"] = detailed["illumination"]
+                                else:
+                                    caps["illumination_enabled"] = client.get_lamp_enabled(channel)
                             if source_id == 2 and bool(next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), {}).get("ptz_enabled", False)):
                                 try:
                                     caps["auto_guard_enabled"] = camera.get_auto_guard()
                                 except Exception as exc:
                                     logging.debug("D2 auto-guard status poll failed: %s", exc)
-                            mqtt.publish_camera_controls(source_id, {
+                            control_state = {
                                 "day_night_mode": caps.get("day_night_mode"),
                                 "illumination": caps.get("illumination_enabled") if caps.get("illumination") else None,
                                 "auto_guard": caps.get("auto_guard_enabled"),
-                            })
+                            }
+                            if caps.get("illumination_detailed"):
+                                control_state.update({key: caps.get(key) for key in (
+                                    "illumination_type", "white_light_mode", "infrared_mode",
+                                    "white_light_level", "infrared_near_level", "infrared_far_level",
+                                )})
+                            mqtt.publish_camera_controls(source_id, control_state)
                         except Exception as exc:
                             logging.debug("D%d image-control status poll failed: %s", source_id, exc)
                     next_camera_control_poll = time.monotonic() + camera_control_poll
