@@ -1,0 +1,156 @@
+from pathlib import Path
+import shutil
+
+old_dir = Path('uniview_ptz_drift')
+new_dir = Path('uniview_camera_bridge')
+if old_dir.exists() and not new_dir.exists():
+    old_dir.rename(new_dir)
+shutil.rmtree(new_dir / '__pycache__', ignore_errors=True)
+
+p = new_dir / 'config.yaml'
+s = p.read_text()
+s = s.replace('version: 1.3.5', 'version: 1.4.0', 1)
+s = s.replace('slug: uniview_ptz_drift', 'slug: uniview_camera_bridge', 1)
+s = s.replace('url: https://github.com/your-user/ha-uniview-ptz-drift', 'url: https://github.com/d3xt3r1ty/uniview_camera_bridge', 1)
+s = s.replace('  ptz_presets: []\n', '  ptz_presets: []\n  ptz_safety_timeout_seconds: 3.0\n', 1)
+s = s.replace('    image_control_channel: 0\n', '    image_control_channel: 0\n    ptz_enabled: true\n', 1)
+s = s.replace('  ptz_presets:\n  - name: str\n    number: int(0,255)\n', '  ptz_presets:\n  - name: str\n    number: int(0,255)\n  ptz_safety_timeout_seconds: float(0.5,10.0)\n', 1)
+s = s.replace('    image_control_channel: int(0,2)?\n', '    image_control_channel: int(0,2)?\n    ptz_enabled: bool?\n', 1)
+p.write_text(s)
+
+p = new_dir / 'uniview.py'
+s = p.read_text()
+s = s.replace('ZOOM_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace"\n', 'ZOOM_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace"\nPAN_TILT_VELOCITY_SPACE = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"\nZOOM_VELOCITY_SPACE = "http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"\n', 1)
+append = """
+
+    def continuous_move(
+        self,
+        pan: float = 0.0,
+        tilt: float = 0.0,
+        zoom: float = 0.0,
+        profile: str | None = None,
+    ) -> None:
+        pan = max(-1.0, min(1.0, float(pan)))
+        tilt = max(-1.0, min(1.0, float(tilt)))
+        zoom = max(-1.0, min(1.0, float(zoom)))
+        if abs(pan) < 1e-6 and abs(tilt) < 1e-6 and abs(zoom) < 1e-6:
+            self.stop_move(profile=profile)
+            return
+        ptz_url, profiles = self._discover_onvif()
+        token = profile or profiles[0]
+        body = f'''<tptz:ContinuousMove xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+<tptz:ProfileToken>{token}</tptz:ProfileToken>
+<tptz:Velocity>
+<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_TILT_VELOCITY_SPACE}"/>
+<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VELOCITY_SPACE}"/>
+</tptz:Velocity>
+</tptz:ContinuousMove>'''
+        self._soap(ptz_url, body, "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove")
+
+    def stop_move(self, profile: str | None = None) -> None:
+        ptz_url, profiles = self._discover_onvif()
+        token = profile or profiles[0]
+        body = f'''<tptz:Stop xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl">
+<tptz:ProfileToken>{token}</tptz:ProfileToken>
+<tptz:PanTilt>true</tptz:PanTilt>
+<tptz:Zoom>true</tptz:Zoom>
+</tptz:Stop>'''
+        self._soap(ptz_url, body, "http://www.onvif.org/ver20/ptz/wsdl/Stop")
+"""
+if '    def continuous_move(' not in s:
+    s = s.rstrip() + append + '\n'
+p.write_text(s)
+
+p = new_dir / 'ha_mqtt.py'
+s = p.read_text()
+old = '''                elif action == "illumination":
+                    self.commands.put({"action": "camera_illumination", "source_id": source_id, "enabled": payload.strip().upper() in ("ON", "1", "TRUE")})
+'''
+new = old + '''                elif action == "ptz":
+                    try:
+                        value = json.loads(payload)
+                        if not isinstance(value, dict):
+                            raise ValueError("PTZ payload must be a JSON object")
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        logging.warning("Ignoring invalid D%d PTZ payload %r: %s", source_id, payload, exc)
+                    else:
+                        self.commands.put({"action": "camera_ptz", "source_id": source_id, **value})
+'''
+assert old in s
+s = s.replace(old, new, 1)
+p.write_text(s)
+
+p = new_dir / 'app.py'
+s = p.read_text()
+s = s.replace('    options["addon_version"] = "1.3.3"', '    options["addon_version"] = "1.4.0"', 1)
+s = s.replace('UNIVIEW CAMERA BRIDGE STARTING - version 1.3.4', 'UNIVIEW CAMERA BRIDGE STARTING - version 1.4.0', 1)
+marker = '    next_camera_control_poll = time.monotonic() + camera_control_poll\n'
+assert marker in s
+s = s.replace(marker, marker + '    ptz_stop_deadlines: dict[int, float] = {}\n', 1)
+s = s.replace('                command = commands.get(timeout=1.0)', '                command = commands.get(timeout=0.1)', 1)
+old = '''                        elif action == "camera_illumination":
+                            channel = camera_control_channels.get(source_id)
+                            if channel is None or not camera_caps.get(source_id, {}).get("illumination"):
+                                logging.warning("D%d does not expose illumination control", source_id)
+                            else:
+                                enabled = client.set_lamp_enabled(channel, bool(command.get("enabled")))
+                                camera_caps[source_id]["illumination_enabled"] = enabled
+                                mqtt.publish_camera_controls(source_id, {"day_night_mode": camera_caps[source_id].get("day_night_mode"), "illumination": enabled})
+                                logging.info("D%d illumination -> %s", source_id, "on" if enabled else "off")
+'''
+new = old + '''                        elif action == "camera_ptz":
+                            camera_def = next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), None)
+                            if not camera_def or not bool(camera_def.get("ptz_enabled", False)):
+                                logging.warning("D%d does not have bridge PTZ control enabled", source_id)
+                            elif bool(command.get("stop", False)):
+                                client.stop_move()
+                                ptz_stop_deadlines.pop(source_id, None)
+                                logging.debug("D%d PTZ stop", source_id)
+                            else:
+                                pan = max(-1.0, min(1.0, float(command.get("pan", 0.0))))
+                                tilt = max(-1.0, min(1.0, float(command.get("tilt", 0.0))))
+                                zoom = max(-1.0, min(1.0, float(command.get("zoom", 0.0))))
+                                client.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
+                                timeout = float(options.get("ptz_safety_timeout_seconds", 3.0))
+                                ptz_stop_deadlines[source_id] = time.monotonic() + timeout
+                                logging.debug("D%d PTZ velocity pan=%.3f tilt=%.3f zoom=%.3f", source_id, pan, tilt, zoom)
+'''
+assert old in s
+s = s.replace(old, new, 1)
+marker2 = '                if time.monotonic() >= next_check:\n'
+safety = '''                expired_ptz = [source_id for source_id, deadline in ptz_stop_deadlines.items() if time.monotonic() >= deadline]
+                for source_id in expired_ptz:
+                    client = camera_clients.get(source_id)
+                    ptz_stop_deadlines.pop(source_id, None)
+                    if client is not None:
+                        try:
+                            client.stop_move()
+                            logging.warning("D%d PTZ safety timeout: movement stopped", source_id)
+                        except Exception as exc:
+                            logging.error("D%d PTZ safety stop failed: %s", source_id, exc)
+
+'''
+assert marker2 in s
+s = s.replace(marker2, safety + marker2, 1)
+p.write_text(s)
+
+for name in ('README.md', 'DOCS.md', 'CHANGELOG.md'):
+    p = new_dir / name
+    if p.exists():
+        s = p.read_text().replace('Uniview PTZ Drift', 'Uniview Camera Bridge').replace('uniview_ptz_drift/', 'uniview_camera_bridge/')
+        p.write_text(s)
+
+changelog = new_dir / 'CHANGELOG.md'
+s = changelog.read_text()
+entry = '''## 1.4.0
+
+- Renamed the add-on slug/source directory to `uniview_camera_bridge`.
+- Added direct ONVIF ContinuousMove/Stop support for physical PTZ cameras.
+- Added JSON MQTT proportional PTZ command transport at `<mqtt_topic>/command/camera/Dn/ptz`.
+- Enabled proportional PTZ for D2 with a configurable fail-safe stop timeout.
+- Kept the existing MQTT base topic/device identifiers for Home Assistant compatibility.
+- Removed committed Python bytecode cache files.
+
+'''
+if '## 1.4.0' not in s:
+    changelog.write_text(entry + s)
