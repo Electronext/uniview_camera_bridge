@@ -1,0 +1,31 @@
+name: Run bridge 1.5.4 patch
+
+on:
+  push:
+    branches:
+      - fix/d2-digest-snapshot-1.5.4
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/d2-digest-snapshot-1.5.4
+      - name: Apply patch
+        run: python tools/patch_154.py
+      - name: Validate Python
+        run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
+      - name: Show diff
+        run: git diff --check && git diff --stat && git diff
+      - name: Commit patched files
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add uniview_camera_bridge/app.py uniview_camera_bridge/config.yaml uniview_camera_bridge/uniview.py uniview_camera_bridge/CHANGELOG.md
+          git commit -m "Retry transient D2 GET faults and pin snapshots" || exit 0
+          git push
