@@ -153,6 +153,15 @@ class MQTTDiscovery:
                     self.commands.put({"action": "camera_day_night", "source_id": source_id, "mode": payload})
                 elif action == "illumination":
                     self.commands.put({"action": "camera_illumination", "source_id": source_id, "enabled": payload.strip().upper() in ("ON", "1", "TRUE")})
+                elif action == "ptz":
+                    try:
+                        value = json.loads(payload)
+                        if not isinstance(value, dict):
+                            raise ValueError("PTZ payload must be a JSON object")
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        logging.warning("Ignoring invalid D%d PTZ payload %r: %s", source_id, payload, exc)
+                    else:
+                        self.commands.put({"action": "camera_ptz", "source_id": source_id, **value})
         elif suffix == "rear_zoom/preset":
             self.commands.put({"action": "rear_zoom_preset", "name": payload})
         elif suffix == "rear_zoom/in":

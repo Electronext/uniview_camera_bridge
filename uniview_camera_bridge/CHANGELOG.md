@@ -1,3 +1,12 @@
+## 1.4.0
+
+- Renamed the add-on slug/source directory to `uniview_camera_bridge`.
+- Added direct ONVIF ContinuousMove/Stop support for physical PTZ cameras.
+- Added JSON MQTT proportional PTZ command transport at `<mqtt_topic>/command/camera/Dn/ptz`.
+- Enabled proportional PTZ for D2 with a configurable fail-safe stop timeout.
+- Kept the existing MQTT base topic/device identifiers for Home Assistant compatibility.
+- Removed committed Python bytecode cache files.
+
 ## 1.3.5
 
 - Fix upgrade validation for existing installations by making per-camera `image_control_channel` optional.

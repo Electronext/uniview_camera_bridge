@@ -787,7 +787,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.3.3"
+    options["addon_version"] = "1.4.0"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -808,7 +808,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.3.4")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.4.0")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_caps, camera_control_channels = probe_camera_controls(camera_clients, camera_definitions(options))
@@ -881,12 +881,13 @@ def main() -> int:
     next_rear_zoom_poll = 0.0
     camera_control_poll = int(options.get("camera_control_poll_seconds", 60))
     next_camera_control_poll = time.monotonic() + camera_control_poll
+    ptz_stop_deadlines: dict[int, float] = {}
     logging.info("Started with %d templates; checking every %d seconds", len(templates["all"]), interval)
 
     try:
         while not stop_requested:
             try:
-                command = commands.get(timeout=1.0)
+                command = commands.get(timeout=0.1)
             except queue.Empty:
                 command = None
             try:
@@ -924,6 +925,22 @@ def main() -> int:
                                 camera_caps[source_id]["illumination_enabled"] = enabled
                                 mqtt.publish_camera_controls(source_id, {"day_night_mode": camera_caps[source_id].get("day_night_mode"), "illumination": enabled})
                                 logging.info("D%d illumination -> %s", source_id, "on" if enabled else "off")
+                        elif action == "camera_ptz":
+                            camera_def = next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), None)
+                            if not camera_def or not bool(camera_def.get("ptz_enabled", False)):
+                                logging.warning("D%d does not have bridge PTZ control enabled", source_id)
+                            elif bool(command.get("stop", False)):
+                                client.stop_move()
+                                ptz_stop_deadlines.pop(source_id, None)
+                                logging.debug("D%d PTZ stop", source_id)
+                            else:
+                                pan = max(-1.0, min(1.0, float(command.get("pan", 0.0))))
+                                tilt = max(-1.0, min(1.0, float(command.get("tilt", 0.0))))
+                                zoom = max(-1.0, min(1.0, float(command.get("zoom", 0.0))))
+                                client.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
+                                timeout = float(options.get("ptz_safety_timeout_seconds", 3.0))
+                                ptz_stop_deadlines[source_id] = time.monotonic() + timeout
+                                logging.debug("D%d PTZ velocity pan=%.3f tilt=%.3f zoom=%.3f", source_id, pan, tilt, zoom)
                     elif action.startswith("rear_zoom_"):
                         if rear_camera is None:
                             logging.warning("Rear zoom command ignored because rear camera is disabled")
@@ -935,6 +952,17 @@ def main() -> int:
                         status = execute_command(command, camera, options, templates, state, ha)
                         if status:
                             mqtt.publish_status(status)
+                expired_ptz = [source_id for source_id, deadline in ptz_stop_deadlines.items() if time.monotonic() >= deadline]
+                for source_id in expired_ptz:
+                    client = camera_clients.get(source_id)
+                    ptz_stop_deadlines.pop(source_id, None)
+                    if client is not None:
+                        try:
+                            client.stop_move()
+                            logging.warning("D%d PTZ safety timeout: movement stopped", source_id)
+                        except Exception as exc:
+                            logging.error("D%d PTZ safety stop failed: %s", source_id, exc)
+
                 if time.monotonic() >= next_check:
                     status = perform_check(camera, options, templates, state, ha)
                     mqtt.publish_status(status)
