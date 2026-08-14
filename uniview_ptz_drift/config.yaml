@@ -1,0 +1,217 @@
+name: Uniview Camera Bridge
+version: 1.3.5
+slug: uniview_ptz_drift
+description: Bridges Uniview smart events and camera controls into Home Assistant
+  while preserving PTZ drift monitoring and motorised-zoom controls.
+url: https://github.com/your-user/ha-uniview-ptz-drift
+arch:
+- aarch64
+- amd64
+startup: services
+boot: auto
+init: false
+host_network: true
+homeassistant_api: true
+map:
+- type: app_config
+  read_only: false
+options:
+  camera_host: 192.168.90.5:30010
+  username: admin
+  password: ''
+  snapshot_channel: 2
+  ptz_channel: 2
+  check_interval_seconds: 120
+  request_timeout_seconds: 15
+  match_threshold: 0.4
+  day_match_threshold: 0.4
+  night_match_threshold: 0.4
+  day_night_entity: sun.sun
+  day_start_hour: 6
+  night_start_hour: 18
+  acceptable_x_min: 70
+  acceptable_x_max: 150
+  acceptable_y_min: 220
+  acceptable_y_max: 350
+  consecutive_failures_before_recovery: 3
+  out_of_bounds_timeout_minutes: 10
+  out_of_frame_timeout_minutes: 16
+  minimum_rectify_interval_minutes: 30
+  minimum_guard_reset_interval_minutes: 8
+  guard_settle_seconds: 10
+  auto_guard_enabled: true
+  auto_guard_preset: 25
+  auto_guard_time_seconds: 35
+  rectify_when_out_of_frame: true
+  update_camera_osd: true
+  osd_channel: 2
+  temperature_entity: ''
+  ptz_busy_entity: ''
+  ptz_busy_states:
+  - 'on'
+  - 'true'
+  - busy
+  - moving
+  ptz_busy_fail_safe: false
+  ptz_presets: []
+  rear_zoom_enabled: true
+  rear_zoom_device_name: Rear Uniview Camera
+  rear_zoom_host: 192.168.90.5:30050
+  rear_zoom_username: ''
+  rear_zoom_password: ''
+  rear_zoom_step: 0.05
+  rear_zoom_poll_seconds: 10
+  rear_zoom_preset_tolerance: 0.006
+  rear_zoom_move_timeout_seconds: 8
+  rear_zoom_presets:
+  - name: Wide
+    position: 0.0
+  - name: Medium
+    position: 0.5
+  - name: Tele
+    position: 1.0
+  history_max_rows: 10000
+  drift_window_hours: 24
+  alarm_service_enabled: true
+  alarm_service_bind: 0.0.0.0
+  alarm_service_port: 1445
+  alarm_service_allowed_sources:
+  - 192.168.90.5
+  event_hold_seconds: 15
+  camera_control_poll_seconds: 60
+  event_history_count: 5
+  alarm_snapshot_fallback_sources:
+  - 5
+  alarm_snapshot_host: 192.168.90.5
+  alarm_snapshot_port_base: 30000
+  alarm_snapshot_port_step: 10
+  alarm_snapshot_channel: 1
+  debug_person_attributes: false
+  debug_event_retention: 0
+  cameras:
+  - source_id: 1
+    name: Driveway
+    model: IPC3605SB-ADF16KM-I0
+    enabled: true
+  - source_id: 2
+    name: Front PTZ
+    model: IPC9312LFW-AF28-2X4
+    enabled: true
+    image_control_channel: 0
+  - source_id: 3
+    name: Front Static
+    model: IPC9312LFW-AF28-2X4
+    enabled: true
+    image_control_channel: 1
+  - source_id: 4
+    name: Front Garden
+    model: IPC324SB-DF28K-I0
+    enabled: true
+  - source_id: 5
+    name: Rear Wide
+    model: IPC2K24SE-ADF40KMC-WL-I0
+    enabled: true
+  - source_id: 6
+    name: Rear Zoom
+    model: IPC2322SB-DZK-I0
+    enabled: true
+  - source_id: 7
+    name: Camera D7
+    model: Uniview camera
+    enabled: false
+  - source_id: 8
+    name: Camera D8
+    model: Uniview camera
+    enabled: false
+  mqtt_enabled: true
+  mqtt_host: core-mosquitto
+  mqtt_port: 1883
+  mqtt_username: ''
+  mqtt_password: ''
+  mqtt_topic: uniview_ptz_drift
+  mqtt_discovery_prefix: homeassistant
+  save_diagnostic_image: true
+  log_level: INFO
+schema:
+  camera_host: str
+  username: str
+  password: password
+  snapshot_channel: int(1,2)
+  ptz_channel: int(1,2)
+  check_interval_seconds: int(15,86400)
+  request_timeout_seconds: int(2,120)
+  match_threshold: float(0.05,1.0)
+  day_match_threshold: float(0.05,1.0)
+  night_match_threshold: float(0.05,1.0)
+  day_night_entity: str
+  day_start_hour: int(0,23)
+  night_start_hour: int(0,23)
+  acceptable_x_min: int(0,)
+  acceptable_x_max: int(0,)
+  acceptable_y_min: int(0,)
+  acceptable_y_max: int(0,)
+  consecutive_failures_before_recovery: int(1,20)
+  out_of_bounds_timeout_minutes: int(1,10080)
+  out_of_frame_timeout_minutes: int(1,10080)
+  minimum_rectify_interval_minutes: int(1,10080)
+  minimum_guard_reset_interval_minutes: int(1,10080)
+  guard_settle_seconds: int(0,300)
+  auto_guard_enabled: bool
+  auto_guard_preset: int(0,255)
+  auto_guard_time_seconds: int(1,3600)
+  rectify_when_out_of_frame: bool
+  update_camera_osd: bool
+  osd_channel: int(1,2)
+  temperature_entity: str
+  ptz_busy_entity: str
+  ptz_busy_states:
+  - str
+  ptz_busy_fail_safe: bool
+  ptz_presets:
+  - name: str
+    number: int(0,255)
+  rear_zoom_enabled: bool
+  rear_zoom_device_name: str
+  rear_zoom_host: str
+  rear_zoom_username: str
+  rear_zoom_password: password
+  rear_zoom_step: float(0.001,1.0)
+  rear_zoom_poll_seconds: int(2,3600)
+  rear_zoom_preset_tolerance: float(0.001,0.1)
+  rear_zoom_move_timeout_seconds: float(1,30)
+  rear_zoom_presets:
+  - name: str
+    position: float(0.0,1.0)
+  history_max_rows: int(100,1000000)
+  drift_window_hours: float(1,720)
+  alarm_service_enabled: bool
+  alarm_service_bind: str
+  alarm_service_port: port
+  alarm_service_allowed_sources:
+  - str
+  event_hold_seconds: int(1,3600)
+  camera_control_poll_seconds: int(10,3600)
+  event_history_count: int(1,20)
+  alarm_snapshot_fallback_sources:
+  - int(1,255)
+  alarm_snapshot_host: str
+  alarm_snapshot_port_base: port
+  alarm_snapshot_port_step: int(1,1000)
+  alarm_snapshot_channel: int(0,2)
+  debug_person_attributes: bool
+  debug_event_retention: int(0,10000)
+  cameras:
+  - source_id: int(1,255)
+    name: str
+    model: str
+    enabled: bool
+    image_control_channel: int(0,2)?
+  mqtt_enabled: bool
+  mqtt_host: str
+  mqtt_port: port
+  mqtt_username: str
+  mqtt_password: password
+  mqtt_topic: str
+  mqtt_discovery_prefix: str
+  save_diagnostic_image: bool
+  log_level: list(DEBUG|INFO|WARNING|ERROR)

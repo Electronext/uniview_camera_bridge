@@ -1,0 +1,89 @@
+configuration:
+  camera_host:
+    name: Camera host
+    description: IP address or hostname, optionally followed by the camera's HTTP port.
+  username:
+    name: Camera username
+  password:
+    name: Camera password
+  snapshot_channel:
+    name: Snapshot channel
+  check_interval_seconds:
+    name: Check interval
+    description: Seconds between position checks.
+  request_timeout_seconds:
+    name: Network timeout
+    description: Seconds allowed for each camera HTTP request.
+  match_threshold:
+    name: Match confidence threshold
+  acceptable_x_min:
+    name: Minimum acceptable X
+  acceptable_x_max:
+    name: Maximum acceptable X
+  acceptable_y_min:
+    name: Minimum acceptable Y
+  acceptable_y_max:
+    name: Maximum acceptable Y
+  out_of_bounds_timeout_minutes:
+    name: Out-of-bounds timeout
+  out_of_frame_timeout_minutes:
+    name: Out-of-frame timeout
+  minimum_rectify_interval_minutes:
+    name: Minimum rectification interval
+  minimum_guard_reset_interval_minutes:
+    name: Minimum auto-guard reset interval
+  guard_settle_seconds:
+    name: Auto-guard settling delay
+  auto_guard_enabled:
+    name: Reset auto-guard before rectification
+  auto_guard_preset:
+    name: Auto-guard preset
+  auto_guard_time_seconds:
+    name: Auto-guard return time
+  rectify_when_out_of_frame:
+    name: Rectify when reference is absent
+  update_camera_osd:
+    name: Update camera OSD diagnostics
+  osd_channel:
+    name: OSD channel
+  save_diagnostic_image:
+    name: Save latest annotated snapshot
+  log_level:
+    name: Log level
+
+  alarm_service_enabled:
+    name: Enable NVR Alarm Service listener
+  alarm_service_bind:
+    name: Alarm Service bind address
+  alarm_service_port:
+    name: Alarm Service port
+  alarm_service_allowed_sources:
+    name: Allowed Alarm Service source addresses
+    description: Only these source IP addresses may POST event notifications; leave the list empty to allow any source.
+  event_hold_seconds:
+    name: Smart-event hold time
+    description: Seconds momentary object and rule detections remain ON before automatically clearing.
+  event_history_count:
+    name: Event snapshot history
+    description: Number of latest event snapshots retained and exposed as Home Assistant image entities per camera.
+  alarm_snapshot_fallback_sources:
+    name: Snapshot fallback camera sources
+    description: NVR source IDs that should fetch a live JPEG when an Alarm notification has no Structure image.
+  alarm_snapshot_host:
+    name: Snapshot fallback host
+    description: Hostname or IP used with the forwarded camera HTTP ports.
+  alarm_snapshot_port_base:
+    name: First forwarded camera port
+  alarm_snapshot_port_step:
+    name: Forwarded camera port step
+  alarm_snapshot_channel:
+    name: Preferred fallback snapshot channel
+  debug_person_attributes:
+    name: Log raw person attributes
+    description: Diagnostic only; does not create Home Assistant person-attribute entities.
+  debug_event_retention:
+    name: Retained diagnostic events
+    description: Number of recent raw Structure events and annotated images to retain per camera; 0 disables retention.
+  cameras:
+    name: Camera source mapping
+    description: Maps Uniview NVR source IDs to Home Assistant camera devices.
