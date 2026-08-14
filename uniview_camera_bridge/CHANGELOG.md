@@ -1,3 +1,8 @@
+## 1.4.1
+
+- Fixed proportional ONVIF PTZ requests to omit unused velocity axes.
+- Added detailed ONVIF SOAP fault logging for rejected PTZ commands.
+
 ## 1.4.0
 
 - Renamed the add-on slug/source directory to `uniview_camera_bridge`.

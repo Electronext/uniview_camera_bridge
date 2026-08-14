@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -179,12 +180,21 @@ class UniviewCamera:
 <s:Header>{self._wsse()}</s:Header>
 <s:Body>{body}</s:Body>
 </s:Envelope>'''
+        logging.debug("ONVIF SOAP request action=%s url=%s body=%s", action, url, body.replace("\n", " "))
         response = self.session.post(
             url,
             data=envelope.encode("utf-8"),
             headers={"Content-Type": f'application/soap+xml; charset=utf-8; action="{action}"'},
             timeout=self.timeout,
         )
+        if not response.ok:
+            logging.error(
+                "ONVIF SOAP fault action=%s url=%s status=%s body=%s",
+                action,
+                url,
+                response.status_code,
+                response.text[:4000].replace("\n", " "),
+            )
         response.raise_for_status()
         return response
 
@@ -289,13 +299,23 @@ class UniviewCamera:
             return
         ptz_url, profiles = self._discover_onvif()
         token = profile or profiles[0]
+        velocity: list[str] = []
+        if abs(pan) >= 1e-6 or abs(tilt) >= 1e-6:
+            velocity.append(
+                f'<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_TILT_VELOCITY_SPACE}"/>'
+            )
+        if abs(zoom) >= 1e-6:
+            velocity.append(
+                f'<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VELOCITY_SPACE}"/>'
+            )
         body = f'''<tptz:ContinuousMove xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
 <tptz:ProfileToken>{token}</tptz:ProfileToken>
-<tptz:Velocity>
-<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_TILT_VELOCITY_SPACE}"/>
-<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VELOCITY_SPACE}"/>
-</tptz:Velocity>
+<tptz:Velocity>{"".join(velocity)}</tptz:Velocity>
 </tptz:ContinuousMove>'''
+        logging.debug(
+            "ONVIF ContinuousMove profile=%s pan=%.3f tilt=%.3f zoom=%.3f",
+            token, pan, tilt, zoom,
+        )
         self._soap(ptz_url, body, "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove")
 
     def stop_move(self, profile: str | None = None) -> None:
