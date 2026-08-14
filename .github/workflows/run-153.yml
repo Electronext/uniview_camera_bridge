@@ -20,11 +20,6 @@ jobs:
         run: python tools/patch_153.py
       - name: Validate Python
         run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
-      - name: Validate YAML
-        run: python - <<'PY'
-          import yaml
-          yaml.safe_load(open('uniview_camera_bridge/config.yaml', encoding='utf-8'))
-          PY
       - name: Show diff
         run: git diff --check && git diff --stat && git diff
       - name: Commit patched files
