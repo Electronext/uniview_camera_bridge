@@ -4,6 +4,7 @@ import base64
 import hashlib
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -38,13 +39,34 @@ class UniviewCamera:
         self._onvif_profile_configs: dict[str, str | None] = {}
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
-        response = self.session.request(
-            method,
-            self.base_url + path,
-            auth=self.auth,
-            timeout=self.timeout,
-            **kwargs,
-        )
+        method = method.upper()
+        response: requests.Response | None = None
+        for attempt in range(3):
+            response = self.session.request(
+                method,
+                self.base_url + path,
+                auth=self.auth,
+                timeout=self.timeout,
+                **kwargs,
+            )
+            transient_get_fault = (
+                method == "GET"
+                and response.status_code == 500
+                and "HTTP GET method not implemented" in response.text
+            )
+            if transient_get_fault and attempt < 2:
+                logging.debug(
+                    "Transient Uniview GET/Digest fault path=%s attempt=%d/3; resetting HTTP session",
+                    path, attempt + 1,
+                )
+                response.close()
+                self.session.close()
+                self.session = requests.Session()
+                self.auth = HTTPDigestAuth(self.username, self.password)
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            break
+        assert response is not None
         if not response.ok:
             logging.error(
                 "LAPI HTTP error method=%s path=%s status=%s body=%s",
