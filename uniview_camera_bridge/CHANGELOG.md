@@ -1,3 +1,8 @@
+## 1.5.1
+
+- Correct D2/front PTZ image-control mapping to LAPI channel 2 on the dual-lens camera.
+- Add optional per-camera `snapshot_channel` and set D2 to channel 2 so manual snapshots no longer return the D3/static sensor image.
+
 ## 1.5.0
 
 - Probe and log ONVIF PTZ `GetConfigurationOptions` spaces/ranges for PTZ-enabled cameras.
