@@ -123,6 +123,16 @@ class UniviewCamera:
         self._lapi_data(response)
         return bool(enabled)
 
+    def get_auto_guard(self) -> bool:
+        response = self._request("GET", "/LAPI/V1.0/Channel/2/PTZ/Guard")
+        data = self._lapi_data(response)
+        if not isinstance(data, dict):
+            raise RuntimeError("Auto-guard status did not return an object")
+        value = data.get("Enabled", data.get("Enable"))
+        if value is None:
+            raise RuntimeError("Auto-guard status has no Enabled/Enable field")
+        return bool(value)
+
     def set_auto_guard(self, enabled: bool, preset: int, guard_time: int) -> None:
         payload = {
             "Enabled": 1 if enabled else 0,
@@ -130,7 +140,8 @@ class UniviewCamera:
             "Param": preset,
             "Time": guard_time,
         }
-        self._request("PUT", "/LAPI/V1.0/Channel/2/PTZ/Guard", json=payload)
+        response = self._request("PUT", "/LAPI/V1.0/Channel/2/PTZ/Guard", json=payload)
+        self._lapi_data(response)
 
     def rectify(self) -> None:
         self._request("PUT", "/LAPI/V1.0/Channels/2/PTZ/Rectify")

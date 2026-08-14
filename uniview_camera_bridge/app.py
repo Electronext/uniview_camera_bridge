@@ -820,10 +820,16 @@ def main() -> int:
     event_state = CameraEventState(mqtt, int(options.get("event_hold_seconds", 15)))
     if mqtt.enabled:
         mqtt.connected.wait(timeout=10)
+    try:
+        camera_caps.setdefault(2, {})["auto_guard_enabled"] = camera.get_auto_guard()
+    except Exception as exc:
+        logging.warning("D2 auto-guard status probe failed: %s", exc)
+        camera_caps.setdefault(2, {})["auto_guard_enabled"] = None
     for source_id, caps in camera_caps.items():
         mqtt.publish_camera_controls(source_id, {
             "day_night_mode": caps.get("day_night_mode"),
             "illumination": caps.get("illumination_enabled") if caps.get("illumination") else None,
+            "auto_guard": caps.get("auto_guard_enabled"),
         })
     fallback_sources = {int(v) for v in options.get("alarm_snapshot_fallback_sources", [5])}
     fallback_host = str(options.get("alarm_snapshot_host", "192.168.90.5")).strip()
@@ -925,6 +931,20 @@ def main() -> int:
                                 camera_caps[source_id]["illumination_enabled"] = enabled
                                 mqtt.publish_camera_controls(source_id, {"day_night_mode": camera_caps[source_id].get("day_night_mode"), "illumination": enabled})
                                 logging.info("D%d illumination -> %s", source_id, "on" if enabled else "off")
+                        elif action == "camera_auto_guard":
+                            camera_def = next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), None)
+                            if source_id != 2 or not camera_def or not bool(camera_def.get("ptz_enabled", False)):
+                                logging.warning("D%d does not expose auto-guard control", source_id)
+                            else:
+                                enabled = bool(command.get("enabled"))
+                                camera.set_auto_guard(enabled, int(options["auto_guard_preset"]), int(options["auto_guard_time_seconds"]))
+                                camera_caps.setdefault(source_id, {})["auto_guard_enabled"] = enabled
+                                mqtt.publish_camera_controls(source_id, {
+                                    "day_night_mode": camera_caps[source_id].get("day_night_mode"),
+                                    "illumination": camera_caps[source_id].get("illumination_enabled") if camera_caps[source_id].get("illumination") else None,
+                                    "auto_guard": enabled,
+                                })
+                                logging.info("D2 auto-guard -> %s", "on" if enabled else "off")
                         elif action == "camera_ptz":
                             camera_def = next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), None)
                             if not camera_def or not bool(camera_def.get("ptz_enabled", False)):
@@ -978,9 +998,15 @@ def main() -> int:
                                 caps["day_night_mode"] = client.get_day_night_mode(channel)
                             if caps.get("illumination"):
                                 caps["illumination_enabled"] = client.get_lamp_enabled(channel)
+                            if source_id == 2 and bool(next((item for item in camera_definitions(options) if int(item.get("source_id", 0)) == source_id), {}).get("ptz_enabled", False)):
+                                try:
+                                    caps["auto_guard_enabled"] = camera.get_auto_guard()
+                                except Exception as exc:
+                                    logging.debug("D2 auto-guard status poll failed: %s", exc)
                             mqtt.publish_camera_controls(source_id, {
                                 "day_night_mode": caps.get("day_night_mode"),
                                 "illumination": caps.get("illumination_enabled") if caps.get("illumination") else None,
+                                "auto_guard": caps.get("auto_guard_enabled"),
                             })
                         except Exception as exc:
                             logging.debug("D%d image-control status poll failed: %s", source_id, exc)

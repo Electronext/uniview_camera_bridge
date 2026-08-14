@@ -4,6 +4,7 @@
 - Added direct ONVIF ContinuousMove/Stop support for physical PTZ cameras.
 - Added JSON MQTT proportional PTZ command transport at `<mqtt_topic>/command/camera/Dn/ptz`.
 - Enabled proportional PTZ for D2 with a configurable fail-safe stop timeout.
+- Added D2 auto-guard enable/disable control and state reporting.
 - Kept the existing MQTT base topic/device identifiers for Home Assistant compatibility.
 - Removed committed Python bytecode cache files.
 

@@ -153,6 +153,8 @@ class MQTTDiscovery:
                     self.commands.put({"action": "camera_day_night", "source_id": source_id, "mode": payload})
                 elif action == "illumination":
                     self.commands.put({"action": "camera_illumination", "source_id": source_id, "enabled": payload.strip().upper() in ("ON", "1", "TRUE")})
+                elif action == "auto_guard":
+                    self.commands.put({"action": "camera_auto_guard", "source_id": source_id, "enabled": payload.strip().upper() in ("ON", "1", "TRUE")})
                 elif action == "ptz":
                     try:
                         value = json.loads(payload)
@@ -515,6 +517,18 @@ class MQTTDiscovery:
                     "command_topic": f"{self.base}/command/camera/D{source_id}/day_night",
                     "options": ["Auto", "Day", "Night"],
                     "icon": "mdi:theme-light-dark",
+                })
+            if bool(camera.get("ptz_enabled", False)):
+                self._camera_config(camera, "switch", "auto_guard", {
+                    "name": "Auto-guard",
+                    "state_topic": f"{event_base}/controls",
+                    "value_template": "{{ 'ON' if value_json.auto_guard else 'OFF' }}",
+                    "command_topic": f"{self.base}/command/camera/D{source_id}/auto_guard",
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "state_on": "ON",
+                    "state_off": "OFF",
+                    "icon": "mdi:shield-home-outline",
                 })
             if caps.get("illumination"):
                 self._camera_config(camera, "switch", "illumination", {
