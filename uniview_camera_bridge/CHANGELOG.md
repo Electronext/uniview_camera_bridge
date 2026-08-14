@@ -1,3 +1,8 @@
+## 1.4.2
+
+- Select an ONVIF media profile that actually advertises a PTZConfiguration before sending PTZ commands.
+- Log discovered ONVIF media profiles and the selected PTZ profile for diagnostics.
+
 ## 1.4.1
 
 - Fixed proportional ONVIF PTZ requests to omit unused velocity axes.
