@@ -651,20 +651,11 @@ def lamp_control_state(lamp: dict[str, Any]) -> dict[str, Any]:
 
 
 def capture_camera_snapshot(source_id: int, client: UniviewCamera, preferred_channel: int = 1) -> tuple[bytes, int]:
-    last_error: Exception | None = None
-    tried: list[int] = []
-    for channel in (preferred_channel, 0, 1, 2):
-        if channel in tried:
-            continue
-        tried.append(channel)
-        try:
-            image = client.snapshot(channel)
-            if image.startswith(b"\xff\xd8"):
-                return image, channel
-            last_error = RuntimeError(f"snapshot channel {channel} did not return JPEG data")
-        except Exception as exc:
-            last_error = exc
-    raise RuntimeError(f"No working snapshot channel for D{source_id}: {last_error}")
+    channel = int(preferred_channel)
+    image = client.snapshot(channel)
+    if not image.startswith(b"\xff\xd8"):
+        raise RuntimeError(f"D{source_id} snapshot channel {channel} did not return JPEG data")
+    return image, channel
 
 
 def persist_manual_snapshot(event_dir: Path, source_id: int, image: bytes, metadata: dict[str, Any]) -> None:
@@ -810,7 +801,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.3"
+    options["addon_version"] = "1.5.4"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -831,7 +822,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.3")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.4")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)

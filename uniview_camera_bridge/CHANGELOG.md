@@ -59,6 +59,12 @@
 
 # Changelog
 
+## 1.5.4
+
+- Retry the camera's transient HTTP 500 `HTTP GET method not implemented` fault by resetting Digest/session state; this was causing D2 image-control commands to abort before their PUT.
+- Treat an explicitly configured manual snapshot channel as authoritative instead of silently falling back to another lens after a transient failure.
+- Keep the packet-capture-proven D2 image/snapshot channel 2 and D3 channel 1 mapping from 1.5.3.
+
 ## 1.3.3
 
 - Added per-camera `Take snapshot` buttons and `Last snapshot` image entities for automations and notifications.
