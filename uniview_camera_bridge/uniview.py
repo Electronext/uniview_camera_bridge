@@ -112,6 +112,23 @@ class UniviewCamera:
             raise RuntimeError("Exposure settings did not return an object")
         return data
 
+    def get_advanced_exposure(self, channel: int) -> dict[str, Any]:
+        # The native web UI reads /Image/Advanced before writing the private
+        # Exposure endpoint. Values in /Advanced/Exposure are not wire-compatible
+        # with that private write (for example shutter values use a different
+        # representation), so use the same source object as the browser.
+        response = self._request("GET", f"/LAPI/V1.0/Channels/{channel}/Image/Advanced")
+        data = self._lapi_data(response)
+        if not isinstance(data, dict):
+            raise RuntimeError("Advanced image settings did not return an object")
+        exposure = data.get("Exposure")
+        if isinstance(exposure, dict):
+            return exposure
+        # Some firmware variants return the exposure object directly.
+        if "DayNight" in data and "ShutterInfo" in data:
+            return data
+        raise RuntimeError(f"Advanced image settings contain no Exposure object: keys={sorted(data.keys())}")
+
     def get_day_night_mode(self, channel: int, private: bool = False) -> str:
         # The native D2 UI writes to the Private/Exposure endpoint, but that
         # endpoint is not a reliable GET endpoint. Read current state from the
@@ -129,10 +146,11 @@ class UniviewCamera:
         key = str(mode).strip().lower()
         if key not in values:
             raise ValueError(f"Unsupported day/night mode: {mode}")
-        # Mirror the camera's current Exposure object and change only the
-        # DayNight mode. This deliberately matches the native web UI's
-        # read/modify/write behaviour instead of synthesising a partial payload.
-        exposure = self.get_exposure(channel)
+        # Mirror the same Exposure representation used by the native web UI.
+        # D2's private write endpoint does not accept the value representation
+        # returned by /Image/Advanced/Exposure, even though the field names look
+        # similar. The browser obtains its write object from /Image/Advanced.
+        exposure = self.get_advanced_exposure(channel) if private else self.get_exposure(channel)
         day_night = dict(exposure.get("DayNight") or {})
         day_night["Mode"] = values[key]
         exposure["DayNight"] = day_night
