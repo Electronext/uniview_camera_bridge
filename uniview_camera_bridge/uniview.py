@@ -136,7 +136,20 @@ class UniviewCamera:
         exposure = self.get_exposure(channel)
         day_night = dict(exposure.get("DayNight") or {})
         day_night["Mode"] = values[key]
-        payload = {"DayNight": day_night} if private else {**exposure, "DayNight": day_night}
+        if private:
+            # The native D2 web UI sends a fixed five-field DayNight object.
+            # Start/End are present even when switching mode is not scheduled;
+            # omitting them is rejected by the camera with vendor UnSupport.
+            private_day_night = {
+                "Mode": values[key],
+                "Sensitivity": int(day_night.get("Sensitivity", 6)),
+                "Time": int(day_night.get("Time", 3)),
+                "Start": str(day_night.get("Start", "")),
+                "End": str(day_night.get("End", "")),
+            }
+            payload = {"DayNight": private_day_night}
+        else:
+            payload = {**exposure, "DayNight": day_night}
         path = (
             f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/"
             if private else f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Exposure"

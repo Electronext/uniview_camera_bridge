@@ -1,3 +1,7 @@
+## 1.5.8
+
+- Match the native D2 web UI Day/Night payload exactly: `Mode`, `Sensitivity`, `Time`, `Start`, and `End`. The camera rejects the otherwise valid private exposure write with vendor `UnSupport` when the empty `Start`/`End` fields are omitted.
+
 ## 1.5.7
 
 - Send only the `DayNight` sub-object to D2's `Image/Advanced/Private/Exposure/` write endpoint instead of the full generic Exposure payload. The full payload is accepted at HTTP level but rejected by Uniview with `UnSupport`.
