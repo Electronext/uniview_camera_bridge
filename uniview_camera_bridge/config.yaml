@@ -1,5 +1,5 @@
 name: Uniview Camera Bridge
-version: 1.6.0
+version: 1.6.1
 slug: uniview_camera_bridge
 description: Bridges Uniview smart events and camera controls into Home Assistant
   while preserving PTZ drift monitoring and motorised-zoom controls.
@@ -85,6 +85,8 @@ options:
   - 2
   lamp_watch_seconds: 5.0
   event_history_count: 5
+  event_crop_enabled: true
+  event_crop_history: true
   alarm_snapshot_fallback_sources:
   - 5
   alarm_snapshot_host: 192.168.90.5
@@ -205,6 +207,8 @@ schema:
   - int(1,255)
   lamp_watch_seconds: float(0.2,60.0)?
   event_history_count: int(1,20)
+  event_crop_enabled: bool
+  event_crop_history: bool
   alarm_snapshot_fallback_sources:
   - int(1,255)
   alarm_snapshot_host: str

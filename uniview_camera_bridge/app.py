@@ -60,9 +60,10 @@ class CameraEventState:
         "human_shape_detect",
     )
 
-    def __init__(self, mqtt: MQTTDiscovery, hold_seconds: int = 15):
+    def __init__(self, mqtt: MQTTDiscovery, hold_seconds: int = 15, event_crop_enabled: bool = True):
         self.mqtt = mqtt
         self.hold_seconds = max(1, int(hold_seconds))
+        self.event_crop_enabled = bool(event_crop_enabled)
         self._states: dict[int, dict[str, Any]] = {}
         self._deadlines: dict[tuple[int, str], float] = {}
         self._lock = threading.Lock()
@@ -141,9 +142,11 @@ class CameraEventState:
             self.mqtt.publish_camera_snapshot(event.source_id, event.full_jpeg, metadata)
             # Compatibility topic for existing dashboards; Last snapshot is now canonical.
             self.mqtt.publish_camera_image(event.source_id, event.full_jpeg, crop=False)
+        if self.event_crop_enabled and event.crop_jpeg:
+            self.mqtt.publish_camera_image(event.source_id, event.crop_jpeg, crop=True)
         stream_event = event.metadata()
         stream_event["has_event_image"] = bool(event.full_jpeg)
-        stream_event["has_object_crop"] = False
+        stream_event["has_object_crop"] = bool(self.event_crop_enabled and event.crop_jpeg)
         self.mqtt.publish_camera_event_message(stream_event)
 
     def expire(self) -> None:
@@ -888,7 +891,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.13")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.6.1")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
@@ -919,7 +922,11 @@ def main() -> int:
     mqtt.start()
     event_dir = PERSIST_DIR / "events"
     history_count = int(options.get("event_history_count", 5))
-    event_state = CameraEventState(mqtt, int(options.get("event_hold_seconds", 15)))
+    event_state = CameraEventState(
+        mqtt,
+        int(options.get("event_hold_seconds", 15)),
+        bool(options.get("event_crop_enabled", True)),
+    )
     if mqtt.enabled:
         mqtt.connected.wait(timeout=10)
     try:
@@ -986,6 +993,8 @@ def main() -> int:
             debug_person_attributes=bool(options.get("debug_person_attributes", False)),
             debug_event_retention=int(options.get("debug_event_retention", 0)),
             event_history_count=history_count,
+            event_crop_enabled=bool(options.get("event_crop_enabled", True)),
+            event_crop_history=bool(options.get("event_crop_history", True)),
             allowed_sources=[str(v) for v in options.get("alarm_service_allowed_sources", ["192.168.90.5"])],
             snapshot_fallback=snapshot_fallback,
         )
