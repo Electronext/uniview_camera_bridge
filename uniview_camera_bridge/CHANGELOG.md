@@ -1,3 +1,8 @@
+## 1.5.9
+
+- D2 Day/Night now mirrors the complete current Exposure object, changes only `DayNight.Mode`, and sends the full object back to the native private exposure endpoint.
+- Match the native Uniview web UI wire format for that private write: compact JSON carried as `text/plain;charset=UTF-8` rather than `application/json`.
+
 ## 1.5.8
 
 - Match the native D2 web UI Day/Night payload exactly: `Mode`, `Sensitivity`, `Time`, `Start`, and `End`. The camera rejects the otherwise valid private exposure write with vendor `UnSupport` when the empty `Start`/`End` fields are omitted.
