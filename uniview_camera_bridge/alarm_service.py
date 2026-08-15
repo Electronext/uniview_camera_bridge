@@ -14,8 +14,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-import cv2
-import numpy as np
 
 ALARM_PATH = "/LAPI/V1.0/System/Event/Notification/Alarm"
 STRUCTURE_PATH = "/LAPI/V1.0/System/Event/Notification/Structure"
@@ -28,26 +26,43 @@ def iso_timestamp(value: Any) -> str:
         return datetime.now().astimezone().isoformat()
 
 
-def normalize_event_type(value: str) -> tuple[str, bool | None]:
+DETECTION_CLASS_LABELS = {
+    "person": "Person",
+    "vehicle": "Vehicle",
+    "non_motor_vehicle": "Non-motor Vehicle",
+    "face": "Face",
+}
+
+EVENT_TYPES: dict[str, tuple[str, str, bool | None]] = {
+    "LineDetectorCrossed": ("cross_line", "Cross Line", True),
+    "EnterArea": ("enter_area", "Enter Area", True),
+    "LeaveArea": ("leave_area", "Leave Area", True),
+    "FieldDetectorObjectsInside": ("intrusion", "Intrusion", True),
+    "AccessZone": ("access_zone", "Access Zone", True),
+    "LeaveZone": ("leave_zone", "Leave Zone", True),
+    "SmartMotionDetectOn": ("smart_motion", "Smart Motion", True),
+    "SmartMotionDetection": ("smart_motion", "Smart Motion", True),
+    "SmartMotionDetectOff": ("smart_motion", "Smart Motion", False),
+    "MotionDetectOn": ("motion", "Motion", True),
+    "MotionDetectOff": ("motion", "Motion", False),
+    "MotionAlarm": ("motion", "Motion", True),
+    "HumanShapeDetect": ("human_shape_detect", "Human Shape", True),
+}
+
+
+def normalize_event_type(value: str) -> tuple[str, str, bool | None]:
     raw = (value or "").strip()
-    mapping = {
-        "LineDetectorCrossed": ("line_crossing", True),
-        "EnterArea": ("intrusion", True),
-        "LeaveArea": ("leave_area", True),
-        "AccessZone": ("access_zone", True),
-        "LeaveZone": ("leave_zone", True),
-        "SmartMotionDetectOn": ("smart_motion", True),
-        "SmartMotionDetection": ("smart_motion", True),
-        "SmartMotionDetectOff": ("smart_motion", False),
-        "MotionDetectOn": ("motion", True),
-        "MotionDetectOff": ("motion", False),
-        "MotionAlarm": ("motion", True),
-        "HumanShapeDetect": ("human_shape_detect", True),
-    }
-    if raw in mapping:
-        return mapping[raw]
+    if raw in EVENT_TYPES:
+        return EVENT_TYPES[raw]
     snake = re.sub(r"(?<!^)(?=[A-Z])", "_", raw).lower() or "unknown"
-    return snake, True if raw else None
+    label = re.sub(r"(?<!^)(?=[A-Z])", " ", raw).strip() or "Unknown"
+    return snake, label, True if raw else None
+
+
+def normalize_bbox(bbox: tuple[int, int, int, int] | None) -> list[float] | None:
+    if not bbox:
+        return None
+    return [round(max(0, min(10000, value)) / 10000.0, 6) for value in bbox]
 
 
 def parse_position(value: Any) -> tuple[int, int, int, int] | None:
@@ -59,12 +74,6 @@ def parse_position(value: Any) -> tuple[int, int, int, int] | None:
     x1, y1, x2, y2 = map(int, match.groups())
     return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
 
-
-def normalized_bbox_to_pixels(bbox: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
-    x1, y1, x2, y2 = bbox
-    conv_x = lambda v: max(0, min(width - 1, round(v * width / 10000.0)))
-    conv_y = lambda v: max(0, min(height - 1, round(v * height / 10000.0)))
-    return conv_x(x1), conv_y(y1), conv_x(x2), conv_y(y2)
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
@@ -87,6 +96,7 @@ class UniviewEvent:
     source_name: str
     raw_type: str
     event_type: str
+    event_label: str
     active: bool | None
     timestamp: str
     timestamp_raw: int | float | None = None
@@ -94,6 +104,8 @@ class UniviewEvent:
     object_id: int | None = None
     object_class: str | None = None
     bbox: tuple[int, int, int, int] | None = None
+    detections: list[dict[str, Any]] = field(default_factory=list)
+    primary_detection: int | None = None
     counts: dict[str, int] = field(default_factory=dict)
     person_attributes: dict[str, Any] | None = None
     full_jpeg: bytes | None = None
@@ -102,17 +114,30 @@ class UniviewEvent:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def metadata(self) -> dict[str, Any]:
+        event_id = f"D{self.source_id}-{self.related_id or self.object_id or self.timestamp}"
         return {
+            "schema_version": 2,
+            "event_id": event_id,
             "source_id": self.source_id,
             "source_name": self.source_name,
             "event_type": self.event_type,
+            "event_label": self.event_label,
             "raw_event_type": self.raw_type,
             "active": self.active,
+            "trigger": {
+                "source": "camera_analytics",
+                "event_type": self.event_type,
+                "event_label": self.event_label,
+                "raw_event_type": self.raw_type,
+                "related_id": self.related_id,
+            },
             "timestamp": self.timestamp,
             "related_id": self.related_id,
             "object_id": self.object_id,
             "object_class": self.object_class,
-            "bbox": list(self.bbox) if self.bbox else None,
+            "bbox": normalize_bbox(self.bbox),
+            "primary_detection": self.primary_detection,
+            "detections": self.detections,
             "person_num": self.counts.get("person", 0),
             "vehicle_num": self.counts.get("vehicle", 0),
             "non_motor_vehicle_num": self.counts.get("non_motor_vehicle", 0),
@@ -127,7 +152,7 @@ class AlarmStructureParser:
     def parse_alarm(self, payload: dict[str, Any]) -> UniviewEvent:
         info = payload.get("AlarmInfo") or {}
         raw_type = str(info.get("AlarmType", ""))
-        event_type, active = normalize_event_type(raw_type)
+        event_type, event_label, active = normalize_event_type(raw_type)
         objects = (payload.get("RelatedObjects") or {}).get("ObjectList") or []
         first = objects[0] if objects and isinstance(objects[0], dict) else {}
         object_type = first.get("ObjectType")
@@ -140,6 +165,7 @@ class AlarmStructureParser:
             source_name="",
             raw_type=raw_type,
             event_type=event_type,
+            event_label=event_label,
             active=active,
             timestamp=iso_timestamp(stamp),
             timestamp_raw=stamp,
@@ -151,7 +177,7 @@ class AlarmStructureParser:
 
     def parse_structure(self, payload: dict[str, Any]) -> UniviewEvent:
         raw_type = str(payload.get("AlarmType", ""))
-        event_type, active = normalize_event_type(raw_type)
+        event_type, event_label, active = normalize_event_type(raw_type)
         structure = payload.get("StructureInfo") or {}
         obj = structure.get("ObjInfo") or {}
         counts = {
@@ -161,21 +187,36 @@ class AlarmStructureParser:
             "face": int(obj.get("FaceNum") or 0),
         }
 
-        record: dict[str, Any] = {}
-        object_class: str | None = None
-        id_key = ""
+        records_with_class: list[tuple[str, str, dict[str, Any]]] = []
         for cls, list_key, id_name in (
             ("person", "PersonInfoList", "PersonID"),
             ("vehicle", "VehicleInfoList", "VehicleID"),
             ("non_motor_vehicle", "NonMotorVehicleInfoList", "NonMotorVehicleID"),
             ("face", "FaceInfoList", "FaceID"),
         ):
-            records = obj.get(list_key) or []
-            if records and isinstance(records[0], dict):
-                record = records[0]
-                object_class = cls
-                id_key = id_name
-                break
+            for item in obj.get(list_key) or []:
+                if isinstance(item, dict):
+                    records_with_class.append((cls, id_name, item))
+
+        detections: list[dict[str, Any]] = []
+        for cls, id_name, item in records_with_class:
+            vendor_bbox = parse_position(item.get("Position"))
+            normalized = normalize_bbox(vendor_bbox)
+            area = 0.0
+            if normalized:
+                x1, y1, x2, y2 = normalized
+                area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+            detections.append({"id": item.get(id_name), "class": cls, "class_label": DETECTION_CLASS_LABELS.get(cls, cls.replace("_", " ").title()), "bbox": normalized, "area": round(area, 8)})
+        detections.sort(key=lambda item: item.get("area", 0.0), reverse=True)
+        for rank, detection in enumerate(detections):
+            detection["rank"] = rank
+        primary_detection = 0 if detections else None
+        primary = detections[0] if detections else {}
+        object_class = primary.get("class")
+        object_id = primary.get("id")
+        primary_box = primary.get("bbox")
+        bbox = tuple(round(float(v) * 10000) for v in primary_box) if primary_box else None
+        record = records_with_class[0][2] if records_with_class else {}
 
         images: dict[int, bytes] = {}
         for image in structure.get("ImageInfoList") or []:
@@ -200,8 +241,6 @@ class AlarmStructureParser:
                     full_jpeg = images[int(image["Index"])]
                     break
 
-        bbox = parse_position(record.get("Position"))
-        annotated = self.annotate(full_jpeg, bbox, object_class, record.get(id_key))
         person_attrs = None
         if object_class == "person" and self.debug_person_attributes:
             attrs = record.get("AttributeInfo")
@@ -213,48 +252,22 @@ class AlarmStructureParser:
             source_name=str(payload.get("SrcName") or ""),
             raw_type=raw_type,
             event_type=event_type,
+            event_label=event_label,
             active=active,
             timestamp=iso_timestamp(stamp),
             timestamp_raw=stamp,
             related_id=payload.get("RelatedID"),
-            object_id=record.get(id_key) if id_key else None,
+            object_id=object_id,
             object_class=object_class,
             bbox=bbox,
+            detections=detections,
+            primary_detection=primary_detection,
             counts=counts,
             person_attributes=person_attrs,
             full_jpeg=full_jpeg,
             crop_jpeg=crop_jpeg,
-            annotated_jpeg=annotated,
             raw=payload,
         )
-
-    @staticmethod
-    def annotate(jpeg: bytes | None, bbox: tuple[int, int, int, int] | None, object_class: str | None, object_id: Any) -> bytes | None:
-        if not jpeg:
-            return None
-        image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-        if image is None:
-            return None
-        if bbox:
-            height, width = image.shape[:2]
-            x1, y1, x2, y2 = normalized_bbox_to_pixels(bbox, width, height)
-            # Give the subject some context. Expand the vendor box by 10% of
-            # its width/height on every side and clip it to the frame.
-            pad_x = max(1, round((x2 - x1) * 0.10))
-            pad_y = max(1, round((y2 - y1) * 0.10))
-            x1 = max(0, x1 - pad_x)
-            y1 = max(0, y1 - pad_y)
-            x2 = min(width - 1, x2 + pad_x)
-            y2 = min(height - 1, y2 + pad_y)
-            red = (0, 0, 255)  # OpenCV BGR
-            cv2.rectangle(image, (x1, y1), (x2, y2), red, 2)
-            label = object_class or "object"
-            if object_id is not None:
-                label += f" {object_id}"
-            text_y = max(24, y1 - 8)
-            cv2.putText(image, label, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, red, 2)
-        ok, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        return encoded.tobytes() if ok else None
 
 
 class EventCorrelator:
@@ -390,7 +403,6 @@ class AlarmServiceBridge:
                 else:
                     if fallback:
                         event.full_jpeg = fallback
-                        event.annotated_jpeg = fallback
                         self._persist(event)
                         logging.info("Captured fallback event snapshot for D%d %s", event.source_id, event.event_type)
             logging.info("Alarm D%d %s active=%s object=%s related=%s", event.source_id, event.event_type, event.active, event.object_id, event.related_id)
@@ -419,13 +431,14 @@ class AlarmServiceBridge:
         with self._persist_lock:
             camera_dir = self.event_dir / f"D{event.source_id}"
             camera_dir.mkdir(parents=True, exist_ok=True)
-            event_image = event.annotated_jpeg or event.full_jpeg
-            if event.full_jpeg:
-                atomic_write_bytes(camera_dir / "last_event_raw.jpg", event.full_jpeg)
+            # Store one pristine JPEG. Detection geometry and labels are metadata,
+            # rendered by the client when requested instead of creating a duplicate.
+            event_image = event.full_jpeg
             if event_image:
                 atomic_write_bytes(camera_dir / "last_event.jpg", event_image)
-            if event.crop_jpeg:
-                atomic_write_bytes(camera_dir / "last_object_crop.jpg", event.crop_jpeg)
+            # Remove legacy duplicate products once this camera next records an event.
+            (camera_dir / "last_event_raw.jpg").unlink(missing_ok=True)
+            (camera_dir / "last_object_crop.jpg").unlink(missing_ok=True)
             metadata = event.metadata()
             if event.person_attributes is not None:
                 metadata["person_attributes"] = event.person_attributes

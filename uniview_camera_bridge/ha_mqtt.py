@@ -471,6 +471,10 @@ class MQTTDiscovery:
                     "", retain=True, wait=True,
                 )
                 self.publish_raw_bytes(f"{event_base}/history/{old_slot + 1}", b"", retain=True)
+            self.publish_raw(
+                f"{self.discovery_prefix}/image/{node}/last_object_crop/config",
+                "", retain=True, wait=True,
+            )
             state_topic = f"{event_base}/state"
             for object_id, name, device_class in (
                 ("person_detected", "Person detected", "occupancy"),
@@ -480,6 +484,9 @@ class MQTTDiscovery:
                 ("smart_motion", "Smart motion", "motion"),
                 ("motion", "Motion", "motion"),
                 ("line_crossing", "Line crossing", None),
+                ("cross_line", "Cross Line", None),
+                ("enter_area", "Enter Area", None),
+                ("leave_area", "Leave Area", None),
                 ("intrusion", "Intrusion", None),
                 ("human_shape_detect", "Human shape detect", "occupancy"),
             ):
@@ -496,15 +503,19 @@ class MQTTDiscovery:
 
             for object_id, name, field in (
                 ("last_event_type", "Last event type", "last_event_type"),
+                ("last_event_label", "Last detection", "last_event_label"),
                 ("last_object_class", "Last object class", "last_object_class"),
                 ("last_object_id", "Last object ID", "last_object_id"),
                 ("last_rule", "Last raw event type", "last_raw_event_type"),
             ):
-                self._camera_config(camera, "sensor", object_id, {
+                payload = {
                     "name": name,
                     "state_topic": state_topic,
                     "value_template": "{{ value_json.%s if value_json.%s is not none else none }}" % (field, field),
-                })
+                }
+                if object_id in ("last_object_id", "last_rule"):
+                    payload["entity_category"] = "diagnostic"
+                self._camera_config(camera, "sensor", object_id, payload)
             self._camera_config(camera, "sensor", "last_event_time", {
                 "name": "Last event time",
                 "state_topic": state_topic,
@@ -626,12 +637,9 @@ class MQTTDiscovery:
                             "icon": icon,
                         })
 
-            self._camera_config(camera, "image", "last_object_crop", {
-                "name": "Last object crop",
-                "image_topic": f"{event_base}/crop",
-                "content_type": "image/jpeg",
-                "json_attributes_topic": f"{event_base}/attributes",
-            })
+            # last_object_crop is intentionally no longer discovered. The pristine
+            # full snapshot plus detections[] can reproduce any ROI without storing
+            # or publishing a second lossy image.
 
     def publish_camera_event_state(self, source_id: int, status: dict[str, Any], attributes: dict[str, Any] | None = None) -> None:
         if not self.enabled:
