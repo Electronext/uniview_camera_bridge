@@ -1,3 +1,9 @@
+## 1.5.11
+
+- D2 Day/Night now uses the exact complete private Exposure payload observed in a fresh native Uniview web-UI capture, changing only `DayNight.Mode`.
+- Removed the unsupported `GET /Image/Advanced` path introduced in 1.5.10; `/Image/Advanced/Exposure` remains the read source for current HA state only.
+- Preserve the native `text/plain;charset=UTF-8` compact-JSON write format for `/Image/Advanced/Private/Exposure/`.
+
 ## 1.5.10
 
 - Correct D2 Day/Night read-modify-write source: the private exposure write now mirrors the Exposure object from `/Image/Advanced`, matching the native Uniview web UI, instead of incorrectly echoing `/Image/Advanced/Exposure`.
