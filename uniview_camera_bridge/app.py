@@ -535,7 +535,14 @@ def camera_definitions(options: dict[str, Any]) -> list[dict[str, Any]]:
         # an installation predating snapshot_channel/image_control_channel still
         # gets the known dual-lens mapping. Explicit user values still win.
         if source_id == 2:
-            camera.setdefault("image_control_channel", 2)
+            try:
+                saved_image_channel = int(camera.get("image_control_channel"))
+            except (TypeError, ValueError):
+                saved_image_channel = None
+            if saved_image_channel in (None, 0):
+                if saved_image_channel == 0:
+                    logging.info("Migrating legacy D2 image_control_channel 0 -> 2")
+                camera["image_control_channel"] = 2
             camera.setdefault("snapshot_channel", 2)
         elif source_id == 3:
             camera.setdefault("image_control_channel", 1)
@@ -828,7 +835,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.5"
+    options["addon_version"] = "1.5.6"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -849,7 +856,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.5")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.6")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)

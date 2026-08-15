@@ -1,3 +1,7 @@
+## 1.5.6
+
+- Migrate the known stale D2 `image_control_channel: 0` value persisted by older add-on versions to channel 2 at runtime. This fixes D2 Day/Night commands still being sent to the wrong image channel after the 1.5.5 default migration.
+
 ## 1.5.5
 
 - Apply D2/D3 dual-lens image/snapshot defaults at runtime as well as in `config.yaml`, so existing Home Assistant saved app options created before those fields were added do not silently fall back to snapshot channel 1.
