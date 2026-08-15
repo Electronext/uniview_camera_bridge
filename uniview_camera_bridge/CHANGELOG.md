@@ -1,3 +1,9 @@
+## 1.5.5
+
+- Apply D2/D3 dual-lens image/snapshot defaults at runtime as well as in `config.yaml`, so existing Home Assistant saved app options created before those fields were added do not silently fall back to snapshot channel 1.
+- Read D2 day/night state from the ordinary Exposure endpoint and reserve the packet-capture-proven Private/Exposure endpoint for writes; the private resource is not assumed to support GET.
+- Detect day/night support from ImageCapabilities as well as the current Exposure payload, preventing D2 from being disabled merely because a state-read probe is awkward.
+
 ## 1.5.3
 
 - Correct D2 dual-lens addressing from native-UI packet captures and a known-good legacy snapshot client: D2 image controls and snapshots use channel 2; D3 uses channel 1.
