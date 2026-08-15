@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: fix/d2-daynight-snapshot-defaults-1.5.5
+      - name: Repair helper
+        run: python tools/fix_patch_155.py
       - name: Apply patch
         run: python tools/patch_155.py
       - name: Validate Python
