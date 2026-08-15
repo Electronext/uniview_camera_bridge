@@ -1,0 +1,26 @@
+name: Apply event snapshot metadata patch
+on:
+  push:
+    branches: [agent/event-snapshot-metadata]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[agent-patch-done]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/event-snapshot-metadata
+      - name: Apply patch
+        run: python tools/agent_event_snapshot_patch.py
+      - name: Validate Python
+        run: python -m py_compile uniview_camera_bridge/alarm_service.py uniview_camera_bridge/app.py uniview_camera_bridge/ha_mqtt.py
+      - name: Commit patched files and remove helpers
+        run: |
+          rm -f tools/agent_event_snapshot_patch.py .github/workflows/agent-event-snapshot-patch.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Add canonical event snapshots and detection metadata [agent-patch-done]'
+          git push
