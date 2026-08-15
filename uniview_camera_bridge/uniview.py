@@ -123,6 +123,40 @@ class UniviewCamera:
         mode = int(raw_mode)
         return {0: "Auto", 1: "Day", 2: "Night"}.get(mode, f"Unknown ({mode})")
 
+    def get_ir_cut_filter(self, video_source_token: str) -> str:
+        body = f'''<timg:GetImagingSettings xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl">
+<timg:VideoSourceToken>{video_source_token}</timg:VideoSourceToken>
+</timg:GetImagingSettings>'''
+        response = self._soap(
+            self.base_url + "/onvif/imaging",
+            body,
+            "http://www.onvif.org/ver20/imaging/wsdl/GetImagingSettings",
+        )
+        root = ET.fromstring(response.content)
+        for element in root.iter():
+            if _localname(element.tag) == "IrCutFilter" and element.text:
+                value = element.text.strip().upper()
+                return {"AUTO": "Auto", "ON": "Day", "OFF": "Night"}.get(value, f"Unknown ({value})")
+        raise RuntimeError(f"ONVIF GetImagingSettings returned no IrCutFilter for {video_source_token}")
+
+    def set_ir_cut_filter(self, video_source_token: str, mode: str) -> str:
+        values = {"auto": "AUTO", "day": "ON", "night": "OFF"}
+        key = str(mode).strip().lower()
+        if key not in values:
+            raise ValueError(f"Unsupported day/night mode: {mode}")
+        ir_cut = values[key]
+        body = f'''<timg:SetImagingSettings xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+<timg:VideoSourceToken>{video_source_token}</timg:VideoSourceToken>
+<timg:ImagingSettings><tt:IrCutFilter>{ir_cut}</tt:IrCutFilter></timg:ImagingSettings>
+<timg:ForcePersistence>true</timg:ForcePersistence>
+</timg:SetImagingSettings>'''
+        self._soap(
+            self.base_url + "/onvif/imaging",
+            body,
+            "http://www.onvif.org/ver20/imaging/wsdl/SetImagingSettings",
+        )
+        return {"AUTO": "Auto", "ON": "Day", "OFF": "Night"}[ir_cut]
+
     def set_day_night_mode(self, channel: int, mode: str, private: bool = False) -> str:
         values = {"auto": 0, "day": 1, "night": 2}
         key = str(mode).strip().lower()

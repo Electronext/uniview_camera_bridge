@@ -544,9 +544,13 @@ def camera_definitions(options: dict[str, Any]) -> list[dict[str, Any]]:
                     logging.info("Migrating legacy D2 image_control_channel 0 -> 2")
                 camera["image_control_channel"] = 2
             camera.setdefault("snapshot_channel", 2)
+            camera.setdefault("day_night_backend", "onvif_imaging")
+            camera.setdefault("video_source_token", "video_source2")
         elif source_id == 3:
             camera.setdefault("image_control_channel", 1)
             camera.setdefault("snapshot_channel", 1)
+            camera.setdefault("day_night_backend", "onvif_imaging")
+            camera.setdefault("video_source_token", "video_source1")
         else:
             camera.setdefault("snapshot_channel", 1)
         result.append(camera)
@@ -619,16 +623,26 @@ def probe_camera_controls(
                 continue
 
             selected = channel
+            camera_def = defs_by_id.get(source_id, {})
+            day_night_backend = str(camera_def.get("day_night_backend", "lapi")).strip().lower()
+            video_source_token = str(camera_def.get("video_source_token", "")).strip()
             try:
-                private_exposure = source_id == 2
-                exposure = client.get_exposure(channel)
-                day_night = exposure.get("DayNight") if isinstance(exposure, dict) else None
-                cap_day_night = ((image_caps.get("Exposure") or {}).get("DayNight") or {}) if isinstance(image_caps, dict) else {}
-                supported = bool(cap_day_night.get("SupportDayNightCfg"))
-                if supported or (isinstance(day_night, dict) and "Mode" in day_night):
+                if day_night_backend == "onvif_imaging" and video_source_token:
                     found["day_night"] = True
-                    found["private_exposure"] = private_exposure
-                    found["day_night_mode"] = client.get_day_night_mode(channel, private=private_exposure)
+                    found["day_night_backend"] = "onvif_imaging"
+                    found["video_source_token"] = video_source_token
+                    found["day_night_mode"] = client.get_ir_cut_filter(video_source_token)
+                else:
+                    private_exposure = False
+                    exposure = client.get_exposure(channel)
+                    day_night = exposure.get("DayNight") if isinstance(exposure, dict) else None
+                    cap_day_night = ((image_caps.get("Exposure") or {}).get("DayNight") or {}) if isinstance(image_caps, dict) else {}
+                    supported = bool(cap_day_night.get("SupportDayNightCfg"))
+                    if supported or (isinstance(day_night, dict) and "Mode" in day_night):
+                        found["day_night"] = True
+                        found["day_night_backend"] = "lapi"
+                        found["private_exposure"] = private_exposure
+                        found["day_night_mode"] = client.get_day_night_mode(channel, private=private_exposure)
             except Exception as exc:
                 logging.debug("D%d day/night probe failed on channel %d: %s", source_id, channel, exc)
 
@@ -835,7 +849,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.12"
+    options["addon_version"] = "1.5.13"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -856,7 +870,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.12")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.13")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
@@ -1023,8 +1037,15 @@ def main() -> int:
                             if channel is None or not camera_caps.get(source_id, {}).get("day_night"):
                                 logging.warning("D%d does not expose day/night control", source_id)
                             else:
-                                private_exposure = bool(camera_caps[source_id].get("private_exposure"))
-                                mode = client.set_day_night_mode(channel, str(command.get("mode", "")), private=private_exposure)
+                                caps = camera_caps[source_id]
+                                if caps.get("day_night_backend") == "onvif_imaging":
+                                    token = str(caps.get("video_source_token", "")).strip()
+                                    if not token:
+                                        raise RuntimeError(f"D{source_id} ONVIF Imaging day/night has no video source token")
+                                    mode = client.set_ir_cut_filter(token, str(command.get("mode", "")))
+                                else:
+                                    private_exposure = bool(caps.get("private_exposure"))
+                                    mode = client.set_day_night_mode(channel, str(command.get("mode", "")), private=private_exposure)
                                 camera_caps[source_id]["day_night_mode"] = mode
                                 mqtt.publish_camera_controls(source_id, {"day_night_mode": mode, "illumination": camera_caps[source_id].get("illumination_enabled")})
                                 logging.info("D%d day/night mode -> %s", source_id, mode)

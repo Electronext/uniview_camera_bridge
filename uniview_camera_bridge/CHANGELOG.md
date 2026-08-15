@@ -1,3 +1,10 @@
+## 1.5.13
+
+- Use ONVIF Imaging `GetImagingSettings` / `SetImagingSettings` for day/night on the dual-lens IPC9312LFW-AF28-2X4, matching camera-side captures of the NVR/web UI.
+- Map D2 Front PTZ to `video_source2` and D3 Front Static to `video_source1`; `IrCutFilter` AUTO/ON/OFF maps to Auto/Day/Night.
+- Keep D2/D3 illumination on the existing LAPI `LampCtrl` path, which camera-side captures also confirm is the native control mechanism.
+- Leave standalone-camera day/night handling unchanged pending capture verification.
+
 ## 1.5.12
 
 - Treat the NVR-forwarded camera's bogus HTTP 500 `HTTP <METHOD> method not implemented` SOAP response as the same transient Digest/session fault for PUT as already handled for GET.
