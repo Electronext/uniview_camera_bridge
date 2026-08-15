@@ -1,0 +1,28 @@
+name: Apply Cross Line compatibility alias
+on:
+  push:
+    branches: [agent/event-snapshot-metadata]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[agent-crossline-done]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/event-snapshot-metadata
+      - run: python tools/agent_crossline_compat.py
+      - name: Validate
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m py_compile uniview_camera_bridge/app.py
+      - name: Commit and clean helpers
+        run: |
+          rm -f tools/agent_crossline_compat.py .github/workflows/agent-crossline-compat.yml
+          find uniview_camera_bridge -type d -name __pycache__ -prune -exec rm -rf {} +
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Keep legacy line crossing sensor as Cross Line alias [agent-crossline-done]'
+          git push
