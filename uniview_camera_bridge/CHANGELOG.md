@@ -1,3 +1,8 @@
+## 1.5.10
+
+- Correct D2 Day/Night read-modify-write source: the private exposure write now mirrors the Exposure object from `/Image/Advanced`, matching the native Uniview web UI, instead of incorrectly echoing `/Image/Advanced/Exposure`.
+- Keep the native `text/plain;charset=UTF-8` compact-JSON wire format and change only `DayNight.Mode`.
+
 ## 1.5.9
 
 - D2 Day/Night now mirrors the complete current Exposure object, changes only `DayNight.Mode`, and sends the full object back to the native private exposure endpoint.
