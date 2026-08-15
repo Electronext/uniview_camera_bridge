@@ -518,7 +518,32 @@ def perform_check(camera: UniviewCamera, options: dict[str, Any], templates: dic
 
 
 def camera_definitions(options: dict[str, Any]) -> list[dict[str, Any]]:
-    return [c for c in (options.get("cameras") or []) if isinstance(c, dict) and c.get("enabled", True)]
+    result: list[dict[str, Any]] = []
+    for raw in (options.get("cameras") or []):
+        if not isinstance(raw, dict) or not raw.get("enabled", True):
+            continue
+        camera = dict(raw)
+        try:
+            source_id = int(camera.get("source_id"))
+        except (TypeError, ValueError):
+            result.append(camera)
+            continue
+
+        # Existing HA app options keep the saved `cameras:` list across app
+        # upgrades.  Fields added to config.yaml later therefore do not appear
+        # automatically in that saved list.  Apply model defaults at runtime so
+        # an installation predating snapshot_channel/image_control_channel still
+        # gets the known dual-lens mapping. Explicit user values still win.
+        if source_id == 2:
+            camera.setdefault("image_control_channel", 2)
+            camera.setdefault("snapshot_channel", 2)
+        elif source_id == 3:
+            camera.setdefault("image_control_channel", 1)
+            camera.setdefault("snapshot_channel", 1)
+        else:
+            camera.setdefault("snapshot_channel", 1)
+        result.append(camera)
+    return result
 
 
 def build_camera_clients(options: dict[str, Any]) -> dict[int, UniviewCamera]:
@@ -589,9 +614,11 @@ def probe_camera_controls(
             selected = channel
             try:
                 private_exposure = source_id == 2
-                exposure = client.get_private_exposure(channel) if private_exposure else client.get_exposure(channel)
+                exposure = client.get_exposure(channel)
                 day_night = exposure.get("DayNight") if isinstance(exposure, dict) else None
-                if isinstance(day_night, dict) and "Mode" in day_night:
+                cap_day_night = ((image_caps.get("Exposure") or {}).get("DayNight") or {}) if isinstance(image_caps, dict) else {}
+                supported = bool(cap_day_night.get("SupportDayNightCfg"))
+                if supported or (isinstance(day_night, dict) and "Mode" in day_night):
                     found["day_night"] = True
                     found["private_exposure"] = private_exposure
                     found["day_night_mode"] = client.get_day_night_mode(channel, private=private_exposure)
@@ -801,7 +828,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.4"
+    options["addon_version"] = "1.5.5"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -822,7 +849,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.4")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.5.5")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)

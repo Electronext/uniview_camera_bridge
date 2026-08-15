@@ -111,17 +111,16 @@ class UniviewCamera:
             raise RuntimeError("Exposure settings did not return an object")
         return data
 
-    def get_private_exposure(self, channel: int) -> dict[str, Any]:
-        response = self._request("GET", f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/")
-        data = self._lapi_data(response)
-        if not isinstance(data, dict):
-            raise RuntimeError("Private exposure settings did not return an object")
-        return data
-
     def get_day_night_mode(self, channel: int, private: bool = False) -> str:
-        exposure = self.get_private_exposure(channel) if private else self.get_exposure(channel)
+        # The native D2 UI writes to the Private/Exposure endpoint, but that
+        # endpoint is not a reliable GET endpoint. Read current state from the
+        # ordinary Exposure resource and use Private/Exposure only for writes.
+        exposure = self.get_exposure(channel)
         day_night = exposure.get("DayNight") or {}
-        mode = int(day_night.get("Mode"))
+        raw_mode = day_night.get("Mode")
+        if raw_mode is None:
+            return "Unknown"
+        mode = int(raw_mode)
         return {0: "Auto", 1: "Day", 2: "Night"}.get(mode, f"Unknown ({mode})")
 
     def set_day_night_mode(self, channel: int, mode: str, private: bool = False) -> str:
@@ -129,7 +128,9 @@ class UniviewCamera:
         key = str(mode).strip().lower()
         if key not in values:
             raise ValueError(f"Unsupported day/night mode: {mode}")
-        exposure = self.get_private_exposure(channel) if private else self.get_exposure(channel)
+        # Seed the write body from the ordinary Exposure GET. The packet capture
+        # shows the D2 UI PUTting that exposure structure to Private/Exposure.
+        exposure = self.get_exposure(channel)
         day_night = dict(exposure.get("DayNight") or {})
         day_night["Mode"] = values[key]
         exposure["DayNight"] = day_night
