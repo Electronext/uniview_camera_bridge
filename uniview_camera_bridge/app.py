@@ -102,6 +102,15 @@ class CameraEventState:
                     state[event.event_type] = True
                     self._deadlines[(event.source_id, event.event_type)] = now_mono + self.hold_seconds
 
+            # Compatibility alias for pre-canonicalisation dashboards. New
+            # configurations should use cross_line.
+            if event.event_type == "cross_line":
+                state["line_crossing"] = bool(event.active)
+                if event.active:
+                    self._deadlines[(event.source_id, "line_crossing")] = now_mono + self.hold_seconds
+                else:
+                    self._deadlines.pop((event.source_id, "line_crossing"), None)
+
             class_flag = {
                 "person": "person_detected",
                 "vehicle": "vehicle_detected",
