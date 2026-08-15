@@ -1,3 +1,8 @@
+## 1.5.12
+
+- Treat the NVR-forwarded camera's bogus HTTP 500 `HTTP <METHOD> method not implemented` SOAP response as the same transient Digest/session fault for PUT as already handled for GET.
+- Reset the HTTP session and retry up to three times while preserving the exact request body and headers, allowing D2 private Day/Night writes to renegotiate Digest authentication just like successful LampCtrl/Exposure reads.
+
 ## 1.5.11
 
 - D2 Day/Night now uses the exact complete private Exposure payload observed in a fresh native Uniview web-UI capture, changing only `DayNight.Mode`.
