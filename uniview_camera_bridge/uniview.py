@@ -128,17 +128,21 @@ class UniviewCamera:
         key = str(mode).strip().lower()
         if key not in values:
             raise ValueError(f"Unsupported day/night mode: {mode}")
-        # Seed the write body from the ordinary Exposure GET. The packet capture
-        # shows the D2 UI PUTting that exposure structure to Private/Exposure.
+        # Read current DayNight fields from ordinary Exposure, but do not send
+        # the entire generic Exposure object to the vendor Private/Exposure
+        # endpoint. The camera returns vendor UnSupport when unrelated exposure
+        # fields are included. The native UI changes DayNight with this focused
+        # sub-object (Mode plus the existing switching fields).
         exposure = self.get_exposure(channel)
         day_night = dict(exposure.get("DayNight") or {})
         day_night["Mode"] = values[key]
-        exposure["DayNight"] = day_night
+        payload = {"DayNight": day_night} if private else {**exposure, "DayNight": day_night}
         path = (
             f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/"
             if private else f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Exposure"
         )
-        response = self._request("PUT", path, json=exposure)
+        logging.debug("Day/night PUT channel=%d private=%s payload=%s", channel, private, payload)
+        response = self._request("PUT", path, json=payload)
         self._lapi_data(response)
         return {0: "Auto", 1: "Day", 2: "Night"}[values[key]]
 
