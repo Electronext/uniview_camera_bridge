@@ -1,5 +1,5 @@
 name: Uniview Camera Bridge
-version: 1.5.7
+version: 1.5.8
 slug: uniview_camera_bridge
 description: Bridges Uniview smart events and camera controls into Home Assistant
   while preserving PTZ drift monitoring and motorised-zoom controls.
