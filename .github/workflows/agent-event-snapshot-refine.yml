@@ -1,0 +1,29 @@
+name: Refine unified event snapshots
+on:
+  push:
+    branches: [agent/event-snapshot-metadata]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[agent-refine-done]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/event-snapshot-metadata
+      - name: Apply refinements
+        run: python tools/agent_event_snapshot_refine.py
+      - name: Validate Python
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -m py_compile uniview_camera_bridge/alarm_service.py uniview_camera_bridge/app.py uniview_camera_bridge/ha_mqtt.py
+      - name: Commit and clean helpers
+        run: |
+          rm -f tools/agent_event_snapshot_refine.py .github/workflows/agent-event-snapshot-refine.yml
+          find uniview_camera_bridge -type d -name __pycache__ -prune -exec rm -rf {} +
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Unify snapshot MQTT metadata and diagnostics [agent-refine-done]'
+          git push
