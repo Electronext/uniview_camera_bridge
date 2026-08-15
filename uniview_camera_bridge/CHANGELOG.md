@@ -1,3 +1,8 @@
+## 1.5.7
+
+- Send only the `DayNight` sub-object to D2's `Image/Advanced/Private/Exposure/` write endpoint instead of the full generic Exposure payload. The full payload is accepted at HTTP level but rejected by Uniview with `UnSupport`.
+- Log the exact Day/Night PUT payload at DEBUG for packet-level comparison.
+
 ## 1.5.6
 
 - Migrate the known stale D2 `image_control_channel: 0` value persisted by older add-on versions to channel 2 at runtime. This fixes D2 Day/Night commands still being sent to the wrong image channel after the 1.5.5 default migration.
