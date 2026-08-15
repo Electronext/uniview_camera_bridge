@@ -1,0 +1,23 @@
+name: Run bridge 1.5.12 patch
+on:
+  push:
+    branches: [fix/transient-put-retry-1.5.12]
+permissions:
+  contents: write
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/transient-put-retry-1.5.12
+      - run: python tools/patch_1512.py
+      - run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
+      - run: git diff --check && git diff --stat
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add uniview_camera_bridge/uniview.py uniview_camera_bridge/app.py uniview_camera_bridge/config.yaml uniview_camera_bridge/CHANGELOG.md
+          git commit -m "Retry transient Uniview PUT Digest faults" || exit 0
+          git push
