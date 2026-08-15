@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import os
 import time
@@ -128,34 +129,29 @@ class UniviewCamera:
         key = str(mode).strip().lower()
         if key not in values:
             raise ValueError(f"Unsupported day/night mode: {mode}")
-        # Read current DayNight fields from ordinary Exposure, but do not send
-        # the entire generic Exposure object to the vendor Private/Exposure
-        # endpoint. The camera returns vendor UnSupport when unrelated exposure
-        # fields are included. The native UI changes DayNight with this focused
-        # sub-object (Mode plus the existing switching fields).
+        # Mirror the camera's current Exposure object and change only the
+        # DayNight mode. This deliberately matches the native web UI's
+        # read/modify/write behaviour instead of synthesising a partial payload.
         exposure = self.get_exposure(channel)
         day_night = dict(exposure.get("DayNight") or {})
         day_night["Mode"] = values[key]
-        if private:
-            # The native D2 web UI sends a fixed five-field DayNight object.
-            # Start/End are present even when switching mode is not scheduled;
-            # omitting them is rejected by the camera with vendor UnSupport.
-            private_day_night = {
-                "Mode": values[key],
-                "Sensitivity": int(day_night.get("Sensitivity", 6)),
-                "Time": int(day_night.get("Time", 3)),
-                "Start": str(day_night.get("Start", "")),
-                "End": str(day_night.get("End", "")),
-            }
-            payload = {"DayNight": private_day_night}
-        else:
-            payload = {**exposure, "DayNight": day_night}
+        exposure["DayNight"] = day_night
         path = (
             f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/"
             if private else f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Exposure"
         )
-        logging.debug("Day/night PUT channel=%d private=%s payload=%s", channel, private, payload)
-        response = self._request("PUT", path, json=payload)
+        logging.debug("Day/night PUT channel=%d private=%s payload=%s", channel, private, exposure)
+        if private:
+            # Uniview's own browser UI posts JSON text to this private endpoint
+            # as text/plain;charset=UTF-8, not application/json. Preserve that
+            # wire format exactly while changing only DayNight.Mode.
+            body = json.dumps(exposure, separators=(",", ":"), ensure_ascii=False)
+            response = self._request(
+                "PUT", path, data=body.encode("utf-8"),
+                headers={"Content-Type": "text/plain;charset=UTF-8"},
+            )
+        else:
+            response = self._request("PUT", path, json=exposure)
         self._lapi_data(response)
         return {0: "Auto", 1: "Day", 2: "Night"}[values[key]]
 
