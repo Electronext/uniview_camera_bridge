@@ -112,23 +112,6 @@ class UniviewCamera:
             raise RuntimeError("Exposure settings did not return an object")
         return data
 
-    def get_advanced_exposure(self, channel: int) -> dict[str, Any]:
-        # The native web UI reads /Image/Advanced before writing the private
-        # Exposure endpoint. Values in /Advanced/Exposure are not wire-compatible
-        # with that private write (for example shutter values use a different
-        # representation), so use the same source object as the browser.
-        response = self._request("GET", f"/LAPI/V1.0/Channels/{channel}/Image/Advanced")
-        data = self._lapi_data(response)
-        if not isinstance(data, dict):
-            raise RuntimeError("Advanced image settings did not return an object")
-        exposure = data.get("Exposure")
-        if isinstance(exposure, dict):
-            return exposure
-        # Some firmware variants return the exposure object directly.
-        if "DayNight" in data and "ShutterInfo" in data:
-            return data
-        raise RuntimeError(f"Advanced image settings contain no Exposure object: keys={sorted(data.keys())}")
-
     def get_day_night_mode(self, channel: int, private: bool = False) -> str:
         # The native D2 UI writes to the Private/Exposure endpoint, but that
         # endpoint is not a reliable GET endpoint. Read current state from the
@@ -146,14 +129,56 @@ class UniviewCamera:
         key = str(mode).strip().lower()
         if key not in values:
             raise ValueError(f"Unsupported day/night mode: {mode}")
-        # Mirror the same Exposure representation used by the native web UI.
-        # D2's private write endpoint does not accept the value representation
-        # returned by /Image/Advanced/Exposure, even though the field names look
-        # similar. The browser obtains its write object from /Image/Advanced.
-        exposure = self.get_advanced_exposure(channel) if private else self.get_exposure(channel)
-        day_night = dict(exposure.get("DayNight") or {})
-        day_night["Mode"] = values[key]
-        exposure["DayNight"] = day_night
+        if private:
+            # D2's native web UI writes this complete private-exposure object and
+            # changes only DayNight.Mode. The public /Advanced/Exposure GET uses
+            # a different value representation, while GET /Image/Advanced itself
+            # is unsupported through this forwarded camera interface. Keep this
+            # template byte-for-byte equivalent in structure to the captured UI
+            # request and alter only the requested mode.
+            exposure = {
+                "Mode": 5,
+                "CompensationLevel": 15,
+                "IrisInfo": {"Iris": 100, "MinIris": 0, "MaxIris": 100},
+                "ShutterInfo": {
+                    "Shutter": 9,
+                    "MinShutter": 23,
+                    "MaxShutter": 8,
+                    "IsEnableSlowShutter": 0,
+                    "SlowestShutter": 7,
+                },
+                "GainInfo": {"Gain": 0, "MinGain": 0, "MaxGain": 100},
+                "WideDynamic": {
+                    "Mode": 2,
+                    "Level": 6,
+                    "OpenSensitivity": 9,
+                    "CloseSensitivity": 8,
+                    "SmartSensitivity": 5,
+                },
+                "DayNight": {
+                    "Mode": values[key],
+                    "Sensitivity": 6,
+                    "Time": 3,
+                    "Start": "",
+                    "End": "",
+                },
+                "ExposureCompensationMode": 2,
+                "LinearAntiFlicker": 1,
+                "Metering": {
+                    "Mode": 5,
+                    "RefBrightness": 50,
+                    "HoldTime": 5,
+                    "Area": {
+                        "TopLeft": {"X": 21, "Y": 22},
+                        "BottomRight": {"X": 80, "Y": 65},
+                    },
+                },
+            }
+        else:
+            exposure = self.get_exposure(channel)
+            day_night = dict(exposure.get("DayNight") or {})
+            day_night["Mode"] = values[key]
+            exposure["DayNight"] = day_night
         path = (
             f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Private/Exposure/"
             if private else f"/LAPI/V1.0/Channels/{channel}/Image/Advanced/Exposure"

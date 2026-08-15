@@ -523,6 +523,12 @@ class MQTTDiscovery:
                 "content_type": "image/jpeg",
                 "json_attributes_topic": f"{event_base}/snapshot_attributes",
             })
+            self._camera_config(camera, "sensor", "last_snapshot_time", {
+                "name": "Last snapshot time",
+                "state_topic": f"{event_base}/snapshot_attributes",
+                "value_template": "{{ value_json.timestamp if value_json.timestamp else none }}",
+                "device_class": "timestamp",
+            })
             self._camera_config(camera, "button", "take_snapshot", {
                 "name": "Take snapshot",
                 "command_topic": f"{self.base}/command/camera/D{source_id}/snapshot",
