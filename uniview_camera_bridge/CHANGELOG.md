@@ -1,9 +1,9 @@
 ## 1.5.13
 
-- Use ONVIF Imaging `GetImagingSettings` / `SetImagingSettings` for day/night on the dual-lens IPC9312LFW-AF28-2X4, matching camera-side captures of the NVR/web UI.
-- Map D2 Front PTZ to `video_source2` and D3 Front Static to `video_source1`; `IrCutFilter` AUTO/ON/OFF maps to Auto/Day/Night.
-- Keep D2/D3 illumination on the existing LAPI `LampCtrl` path, which camera-side captures also confirm is the native control mechanism.
-- Leave standalone-camera day/night handling unchanged pending capture verification.
+- Switch normal Auto/Day/Night control for all enabled cameras to ONVIF Imaging `GetImagingSettings` / `SetImagingSettings`, matching direct camera-side captures of the NVR/web UI.
+- Map standalone cameras D1/D4/D5/D6 to `video_source`, D2 Front PTZ to `video_source2`, and D3 Front Static to `video_source1`; `IrCutFilter` AUTO/ON/OFF maps to Auto/Day/Night.
+- Keep illumination on the existing Uniview LAPI `LampCtrl` path, which the camera-side captures confirm is still the native mechanism for light control.
+- Do not expose the vendor-specific alarm-input day/night mode at this time; it remains outside the normal ONVIF three-state control and has not been reliable in use.
 
 ## 1.5.12
 

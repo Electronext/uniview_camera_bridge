@@ -544,15 +544,17 @@ def camera_definitions(options: dict[str, Any]) -> list[dict[str, Any]]:
                     logging.info("Migrating legacy D2 image_control_channel 0 -> 2")
                 camera["image_control_channel"] = 2
             camera.setdefault("snapshot_channel", 2)
-            camera.setdefault("day_night_backend", "onvif_imaging")
-            camera.setdefault("video_source_token", "video_source2")
+            camera["day_night_backend"] = "onvif_imaging"
+            camera["video_source_token"] = "video_source2"
         elif source_id == 3:
             camera.setdefault("image_control_channel", 1)
             camera.setdefault("snapshot_channel", 1)
-            camera.setdefault("day_night_backend", "onvif_imaging")
-            camera.setdefault("video_source_token", "video_source1")
+            camera["day_night_backend"] = "onvif_imaging"
+            camera["video_source_token"] = "video_source1"
         else:
             camera.setdefault("snapshot_channel", 1)
+            camera["day_night_backend"] = "onvif_imaging"
+            camera["video_source_token"] = "video_source"
         result.append(camera)
     return result
 
