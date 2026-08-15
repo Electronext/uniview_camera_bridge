@@ -50,15 +50,14 @@ class UniviewCamera:
                 timeout=self.timeout,
                 **kwargs,
             )
-            transient_get_fault = (
-                method == "GET"
-                and response.status_code == 500
-                and "HTTP GET method not implemented" in response.text
+            transient_method_fault = (
+                response.status_code == 500
+                and f"HTTP {method} method not implemented" in response.text
             )
-            if transient_get_fault and attempt < 2:
+            if transient_method_fault and attempt < 2:
                 logging.debug(
-                    "Transient Uniview GET/Digest fault path=%s attempt=%d/3; resetting HTTP session",
-                    path, attempt + 1,
+                    "Transient Uniview %s/Digest fault path=%s attempt=%d/3; resetting HTTP session",
+                    method, path, attempt + 1,
                 )
                 response.close()
                 self.session.close()
