@@ -471,6 +471,10 @@ class MQTTDiscovery:
                     "", retain=True, wait=True,
                 )
                 self.publish_raw_bytes(f"{event_base}/history/{old_slot + 1}", b"", retain=True)
+            self.publish_raw(
+                f"{self.discovery_prefix}/image/{node}/last_object_crop/config",
+                "", retain=True, wait=True,
+            )
             state_topic = f"{event_base}/state"
             for object_id, name, device_class in (
                 ("person_detected", "Person detected", "occupancy"),
@@ -504,11 +508,14 @@ class MQTTDiscovery:
                 ("last_object_id", "Last object ID", "last_object_id"),
                 ("last_rule", "Last raw event type", "last_raw_event_type"),
             ):
-                self._camera_config(camera, "sensor", object_id, {
+                payload = {
                     "name": name,
                     "state_topic": state_topic,
                     "value_template": "{{ value_json.%s if value_json.%s is not none else none }}" % (field, field),
-                })
+                }
+                if object_id in ("last_object_id", "last_rule"):
+                    payload["entity_category"] = "diagnostic"
+                self._camera_config(camera, "sensor", object_id, payload)
             self._camera_config(camera, "sensor", "last_event_time", {
                 "name": "Last event time",
                 "state_topic": state_topic,

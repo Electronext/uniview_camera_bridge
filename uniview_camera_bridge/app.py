@@ -126,6 +126,11 @@ class CameraEventState:
 
         self.mqtt.publish_camera_event_state(event.source_id, published, attrs)
         if event.full_jpeg:
+            metadata = event.metadata()
+            if event.person_attributes is not None:
+                metadata["person_attributes"] = event.person_attributes
+            self.mqtt.publish_camera_snapshot(event.source_id, event.full_jpeg, metadata)
+            # Compatibility topic for existing dashboards; Last snapshot is now canonical.
             self.mqtt.publish_camera_image(event.source_id, event.full_jpeg, crop=False)
         stream_event = event.metadata()
         stream_event["has_event_image"] = bool(event.full_jpeg)

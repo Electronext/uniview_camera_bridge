@@ -14,8 +14,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-import cv2
-import numpy as np
 
 ALARM_PATH = "/LAPI/V1.0/System/Event/Notification/Alarm"
 STRUCTURE_PATH = "/LAPI/V1.0/System/Event/Notification/Structure"
@@ -27,6 +25,13 @@ def iso_timestamp(value: Any) -> str:
     except (TypeError, ValueError, OSError, OverflowError):
         return datetime.now().astimezone().isoformat()
 
+
+DETECTION_CLASS_LABELS = {
+    "person": "Person",
+    "vehicle": "Vehicle",
+    "non_motor_vehicle": "Non-motor Vehicle",
+    "face": "Face",
+}
 
 EVENT_TYPES: dict[str, tuple[str, str, bool | None]] = {
     "LineDetectorCrossed": ("cross_line", "Cross Line", True),
@@ -69,12 +74,6 @@ def parse_position(value: Any) -> tuple[int, int, int, int] | None:
     x1, y1, x2, y2 = map(int, match.groups())
     return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
 
-
-def normalized_bbox_to_pixels(bbox: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
-    x1, y1, x2, y2 = bbox
-    conv_x = lambda v: max(0, min(width - 1, round(v * width / 10000.0)))
-    conv_y = lambda v: max(0, min(height - 1, round(v * height / 10000.0)))
-    return conv_x(x1), conv_y(y1), conv_x(x2), conv_y(y2)
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
@@ -125,6 +124,13 @@ class UniviewEvent:
             "event_label": self.event_label,
             "raw_event_type": self.raw_type,
             "active": self.active,
+            "trigger": {
+                "source": "camera_analytics",
+                "event_type": self.event_type,
+                "event_label": self.event_label,
+                "raw_event_type": self.raw_type,
+                "related_id": self.related_id,
+            },
             "timestamp": self.timestamp,
             "related_id": self.related_id,
             "object_id": self.object_id,
@@ -200,7 +206,7 @@ class AlarmStructureParser:
             if normalized:
                 x1, y1, x2, y2 = normalized
                 area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-            detections.append({"id": item.get(id_name), "class": cls, "bbox": normalized, "area": round(area, 8)})
+            detections.append({"id": item.get(id_name), "class": cls, "class_label": DETECTION_CLASS_LABELS.get(cls, cls.replace("_", " ").title()), "bbox": normalized, "area": round(area, 8)})
         detections.sort(key=lambda item: item.get("area", 0.0), reverse=True)
         for rank, detection in enumerate(detections):
             detection["rank"] = rank
@@ -430,6 +436,9 @@ class AlarmServiceBridge:
             event_image = event.full_jpeg
             if event_image:
                 atomic_write_bytes(camera_dir / "last_event.jpg", event_image)
+            # Remove legacy duplicate products once this camera next records an event.
+            (camera_dir / "last_event_raw.jpg").unlink(missing_ok=True)
+            (camera_dir / "last_object_crop.jpg").unlink(missing_ok=True)
             metadata = event.metadata()
             if event.person_attributes is not None:
                 metadata["person_attributes"] = event.person_attributes
