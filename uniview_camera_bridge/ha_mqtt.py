@@ -471,10 +471,19 @@ class MQTTDiscovery:
                     "", retain=True, wait=True,
                 )
                 self.publish_raw_bytes(f"{event_base}/history/{old_slot + 1}", b"", retain=True)
-            self.publish_raw(
-                f"{self.discovery_prefix}/image/{node}/last_object_crop/config",
-                "", retain=True, wait=True,
-            )
+            if self.options.get("event_crop_enabled", True):
+                self._camera_config(camera, "image", "last_object_crop", {
+                    "name": "Last event crop",
+                    "image_topic": f"{event_base}/crop",
+                    "content_type": "image/jpeg",
+                    "json_attributes_topic": f"{event_base}/attributes",
+                })
+            else:
+                self.publish_raw(
+                    f"{self.discovery_prefix}/image/{node}/last_object_crop/config",
+                    "", retain=True, wait=True,
+                )
+                self.publish_raw_bytes(f"{event_base}/crop", b"", retain=True)
             state_topic = f"{event_base}/state"
             for object_id, name, device_class in (
                 ("person_detected", "Person detected", "occupancy"),
@@ -636,10 +645,6 @@ class MQTTDiscovery:
                             "mode": "slider",
                             "icon": icon,
                         })
-
-            # last_object_crop is intentionally no longer discovered. The pristine
-            # full snapshot plus detections[] can reproduce any ROI without storing
-            # or publishing a second lossy image.
 
     def publish_camera_event_state(self, source_id: int, status: dict[str, Any], attributes: dict[str, Any] | None = None) -> None:
         if not self.enabled:

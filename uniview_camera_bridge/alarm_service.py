@@ -319,6 +319,8 @@ class AlarmServiceBridge:
         debug_person_attributes: bool = False,
         debug_event_retention: int = 0,
         event_history_count: int = 5,
+        event_crop_enabled: bool = True,
+        event_crop_history: bool = True,
         allowed_sources: list[str] | None = None,
         snapshot_fallback: Callable[[UniviewEvent], bytes | None] | None = None,
     ):
@@ -331,6 +333,8 @@ class AlarmServiceBridge:
         self.debug_person_attributes = debug_person_attributes
         self.debug_event_retention = max(0, int(debug_event_retention))
         self.event_history_count = max(1, int(event_history_count))
+        self.event_crop_enabled = bool(event_crop_enabled)
+        self.event_crop_history = bool(event_crop_history)
         self.snapshot_fallback = snapshot_fallback
         self._persist_lock = threading.Lock()
         self.allowed_sources = {str(v).strip() for v in (allowed_sources or []) if str(v).strip()}
@@ -436,9 +440,14 @@ class AlarmServiceBridge:
             event_image = event.full_jpeg
             if event_image:
                 atomic_write_bytes(camera_dir / "last_event.jpg", event_image)
-            # Remove legacy duplicate products once this camera next records an event.
+            # Remove the old annotated/raw duplicate; retain the camera-supplied
+            # object crop only when explicitly enabled as an auxiliary thumbnail.
             (camera_dir / "last_event_raw.jpg").unlink(missing_ok=True)
-            (camera_dir / "last_object_crop.jpg").unlink(missing_ok=True)
+            crop_path = camera_dir / "last_object_crop.jpg"
+            if self.event_crop_enabled and event.crop_jpeg:
+                atomic_write_bytes(crop_path, event.crop_jpeg)
+            else:
+                crop_path.unlink(missing_ok=True)
             metadata = event.metadata()
             if event.person_attributes is not None:
                 metadata["person_attributes"] = event.person_attributes
@@ -452,10 +461,13 @@ class AlarmServiceBridge:
                 history_image = history_dir / f"{stamp}_{key}.jpg"
                 atomic_write_bytes(history_image, event_image)
                 atomic_write_bytes(history_image.with_suffix(".json"), json.dumps(metadata, indent=2, sort_keys=True).encode("utf-8"))
-                images = sorted(history_dir.glob("*.jpg"), key=lambda p: p.name, reverse=True)
+                if self.event_crop_enabled and self.event_crop_history and event.crop_jpeg:
+                    atomic_write_bytes(history_image.with_name(history_image.stem + ".crop.jpg"), event.crop_jpeg)
+                images = sorted((p for p in history_dir.glob("*.jpg") if not p.name.endswith(".crop.jpg")), key=lambda p: p.name, reverse=True)
                 for old_image in images[self.event_history_count:]:
                     old_image.unlink(missing_ok=True)
                     old_image.with_suffix(".json").unlink(missing_ok=True)
+                    old_image.with_name(old_image.stem + ".crop.jpg").unlink(missing_ok=True)
 
             if self.debug_event_retention > 0:
                 debug_dir = camera_dir / "debug"
