@@ -127,8 +127,7 @@ class UniviewCamera:
         body = f'''<timg:GetImagingSettings xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl">
 <timg:VideoSourceToken>{video_source_token}</timg:VideoSourceToken>
 </timg:GetImagingSettings>'''
-        response = self._soap(
-            self.base_url + "/onvif/imaging",
+        response = self._imaging_soap(
             body,
             "http://www.onvif.org/ver20/imaging/wsdl/GetImagingSettings",
         )
@@ -150,8 +149,7 @@ class UniviewCamera:
 <timg:ImagingSettings><tt:IrCutFilter>{ir_cut}</tt:IrCutFilter></timg:ImagingSettings>
 <timg:ForcePersistence>true</timg:ForcePersistence>
 </timg:SetImagingSettings>'''
-        self._soap(
-            self.base_url + "/onvif/imaging",
+        self._imaging_soap(
             body,
             "http://www.onvif.org/ver20/imaging/wsdl/SetImagingSettings",
         )
@@ -329,6 +327,34 @@ class UniviewCamera:
                 url,
                 response.status_code,
                 response.text[:4000].replace("\n", " "),
+            )
+        response.raise_for_status()
+        return response
+
+    def _imaging_soap(self, body: str, action: str) -> requests.Response:
+        """Send ONVIF Imaging using the wire format captured from the Uniview NVR."""
+        envelope = f'''<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+<s:Header>{self._wsse()}</s:Header>
+<s:Body>{body}</s:Body>
+</s:Envelope>'''
+        url = self.base_url + "/onvif/imaging"
+        logging.debug("ONVIF Imaging request action=%s url=%s body=%s", action, url, body.replace("\n", " "))
+        response = self.session.post(
+            url,
+            data=envelope.encode("utf-8"),
+            headers={
+                "Content-Type": "application/soap+xml; charset=utf-8",
+                "SOAPAction": f'"{action}"',
+                "User-Agent": "SOAP",
+                "Connection": "close",
+            },
+            timeout=self.timeout,
+        )
+        if not response.ok:
+            logging.error(
+                "ONVIF Imaging SOAP fault action=%s url=%s status=%s body=%s",
+                action, url, response.status_code, response.text[:4000].replace("\n", " "),
             )
         response.raise_for_status()
         return response
