@@ -53,6 +53,9 @@ class CameraEventState:
         "smart_motion",
         "motion",
         "line_crossing",
+        "cross_line",
+        "enter_area",
+        "leave_area",
         "intrusion",
         "human_shape_detect",
     )
@@ -67,6 +70,7 @@ class CameraEventState:
     def _state(self, source_id: int) -> dict[str, Any]:
         state = self._states.setdefault(source_id, {field: False for field in self.FLAG_FIELDS})
         state.setdefault("last_event_type", None)
+        state.setdefault("last_event_label", None)
         state.setdefault("last_raw_event_type", None)
         state.setdefault("last_object_class", None)
         state.setdefault("last_object_id", None)
@@ -79,13 +83,15 @@ class CameraEventState:
             return
         with self._lock:
             state = self._state(event.source_id)
-            state["last_event_type"] = event.event_type
             state["last_raw_event_type"] = event.raw_type
-            if event.object_class is not None:
-                state["last_object_class"] = event.object_class
-            if event.object_id is not None:
-                state["last_object_id"] = event.object_id
-            state["last_event_time"] = event.timestamp
+            if event.active is not False:
+                state["last_event_type"] = event.event_type
+                state["last_event_label"] = event.event_label
+                if event.object_class is not None:
+                    state["last_object_class"] = event.object_class
+                if event.object_id is not None:
+                    state["last_object_id"] = event.object_id
+                state["last_event_time"] = event.timestamp
 
             now_mono = time.monotonic()
             if event.event_type in state:
@@ -119,15 +125,11 @@ class CameraEventState:
                     attrs["person_attributes"] = event.person_attributes
 
         self.mqtt.publish_camera_event_state(event.source_id, published, attrs)
-        if event.annotated_jpeg:
-            self.mqtt.publish_camera_image(event.source_id, event.annotated_jpeg, crop=False)
-        elif event.full_jpeg:
+        if event.full_jpeg:
             self.mqtt.publish_camera_image(event.source_id, event.full_jpeg, crop=False)
-        if event.crop_jpeg:
-            self.mqtt.publish_camera_image(event.source_id, event.crop_jpeg, crop=True)
         stream_event = event.metadata()
-        stream_event["has_event_image"] = bool(event.annotated_jpeg or event.full_jpeg)
-        stream_event["has_object_crop"] = bool(event.crop_jpeg)
+        stream_event["has_event_image"] = bool(event.full_jpeg)
+        stream_event["has_object_crop"] = False
         self.mqtt.publish_camera_event_message(stream_event)
 
     def expire(self) -> None:
@@ -1029,7 +1031,7 @@ def main() -> int:
                             snapshot_channel = int(camera_def.get("snapshot_channel", options.get("alarm_snapshot_channel", 1)))
                             image, channel = capture_camera_snapshot(source_id, client, snapshot_channel)
                             stamp = now().isoformat()
-                            attrs = {"source_id": source_id, "timestamp": stamp, "event_type": "manual_snapshot", "snapshot_channel": channel}
+                            attrs = {"schema_version": 2, "snapshot_id": f"D{source_id}-{stamp}", "source_id": source_id, "timestamp": stamp, "trigger": {"source": "manual", "event_type": "snapshot", "event_label": "Manual Snapshot"}, "detections": [], "primary_detection": None, "snapshot_channel": channel}
                             persist_manual_snapshot(event_dir, source_id, image, attrs)
                             mqtt.publish_camera_snapshot(source_id, image, attrs)
                             mqtt.publish_camera_event_message({**attrs, "has_event_image": True, "has_object_crop": False})

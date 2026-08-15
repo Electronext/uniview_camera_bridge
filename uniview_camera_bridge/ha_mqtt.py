@@ -480,6 +480,9 @@ class MQTTDiscovery:
                 ("smart_motion", "Smart motion", "motion"),
                 ("motion", "Motion", "motion"),
                 ("line_crossing", "Line crossing", None),
+                ("cross_line", "Cross Line", None),
+                ("enter_area", "Enter Area", None),
+                ("leave_area", "Leave Area", None),
                 ("intrusion", "Intrusion", None),
                 ("human_shape_detect", "Human shape detect", "occupancy"),
             ):
@@ -496,6 +499,7 @@ class MQTTDiscovery:
 
             for object_id, name, field in (
                 ("last_event_type", "Last event type", "last_event_type"),
+                ("last_event_label", "Last detection", "last_event_label"),
                 ("last_object_class", "Last object class", "last_object_class"),
                 ("last_object_id", "Last object ID", "last_object_id"),
                 ("last_rule", "Last raw event type", "last_raw_event_type"),
@@ -626,12 +630,9 @@ class MQTTDiscovery:
                             "icon": icon,
                         })
 
-            self._camera_config(camera, "image", "last_object_crop", {
-                "name": "Last object crop",
-                "image_topic": f"{event_base}/crop",
-                "content_type": "image/jpeg",
-                "json_attributes_topic": f"{event_base}/attributes",
-            })
+            # last_object_crop is intentionally no longer discovered. The pristine
+            # full snapshot plus detections[] can reproduce any ROI without storing
+            # or publishing a second lossy image.
 
     def publish_camera_event_state(self, source_id: int, status: dict[str, Any], attributes: dict[str, Any] | None = None) -> None:
         if not self.enabled:
