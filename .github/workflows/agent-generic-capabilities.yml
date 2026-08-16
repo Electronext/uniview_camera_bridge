@@ -15,6 +15,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Fix helper for current rear-zoom settle loop
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tools/agent_generic_capabilities.py')
+          s = p.read_text()
+          s = s.replace(
+              "    else:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",\\n            target,\\n            position,\\n        )\\n",
+              "    if abs(position - target) > tolerance:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",\\n            target,\\n            position,\\n        )\\n",
+              1,
+          )
+          p.write_text(s)
+          PY
       - name: Apply migration patch
         run: python tools/agent_generic_capabilities.py
       - name: Validate Python
