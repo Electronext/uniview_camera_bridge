@@ -58,7 +58,7 @@ options:
   ptz_zoom_poll_seconds: 1.0
   ptz_zoom_active_poll_seconds: 0.2
   ptz_zoom_target_tolerance_percent: 0.5
-  rear_zoom_enabled: true
+  rear_zoom_enabled: false
   rear_zoom_device_name: Rear Uniview Camera
   rear_zoom_host: 192.168.90.5:30050
   rear_zoom_username: ''
