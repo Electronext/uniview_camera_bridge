@@ -22,8 +22,20 @@ jobs:
           p = Path('tools/agent_generic_capabilities.py')
           s = p.read_text()
           s = s.replace(
-              "    else:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",\\n            target,\\n            position,\\n        )\\n",
-              "    if abs(position - target) > tolerance:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",\\n            target,\\n            position,\\n        )\\n",
+              '''    else:
+        logging.warning(
+            "Rear camera zoom did not settle at %.6f within timeout; reported %.6f",
+            target,
+            position,
+        )
+''',
+              '''    if abs(position - target) > tolerance:
+        logging.warning(
+            "Rear camera zoom did not settle at %.6f within timeout; reported %.6f",
+            target,
+            position,
+        )
+''',
               1,
           )
           p.write_text(s)
