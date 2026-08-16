@@ -103,43 +103,49 @@ Version 1.1.3 adds recorder-friendly entities intended for Home Assistant Histor
 
 The offset and error sensors use the centre of the configured acceptable rectangle as the zero/reference point. Home Assistant Recorder stores their state history automatically unless they have been excluded from Recorder.
 
-## Rear Uniview motorised-zoom camera
+## Capability-driven PTZ and motorised zoom
 
-The add-on can also expose a separate motorised-zoom Uniview camera as its own Home Assistant MQTT device. This is independent of the front PTZ drift monitoring and uses ONVIF absolute zoom control.
+From version 1.7.0-alpha, PTZ is treated as a set of independently discovered ONVIF capabilities rather than as a camera type or model-specific feature. Every enabled camera is probed through its configured/NVR-forwarded endpoint for the PTZ spaces it actually advertises.
 
-For the IPC2322SB-DZK-I0 on the same forwarded IP at port 30050, configure for example:
+The bridge distinguishes, independently:
 
-```yaml
-rear_zoom_enabled: true
-rear_zoom_device_name: Rear Uniview Camera
-rear_zoom_host: 192.168.90.5:30050
-rear_zoom_username: ""
-rear_zoom_password: ""
-rear_zoom_step: 0.05
-rear_zoom_poll_seconds: 10
-rear_zoom_presets:
-  - name: Wide
-    position: 0.0
-  - name: Yard
-    position: 0.30
-  - name: Gate
-    position: 0.613333285
-  - name: Tele
-    position: 1.0
+- absolute zoom position;
+- relative zoom translation;
+- continuous zoom velocity;
+- absolute pan/tilt position;
+- relative pan/tilt translation; and
+- continuous pan/tilt velocity.
+
+A motorised varifocal camera that has zoom but no pan/tilt therefore appears naturally as a zoom-capable camera. It does not need a model name, source ID, or special `rear_zoom_*` implementation to enable zoom control. Conversely, a fixed camera that does not advertise the relevant ONVIF spaces does not receive those controls.
+
+When absolute zoom is available, Home Assistant MQTT discovery creates a **Zoom** number on that camera's normal MQTT device. Commands use:
+
+```text
+<mqtt_topic>/command/camera/D<n>/zoom/set
 ```
 
-An empty `rear_zoom_username` or `rear_zoom_password` falls back to the main camera credentials.
+and the bridge reports the camera's actual position on the normal per-camera controls state topic. Absolute moves are non-blocking: a newer target may replace a target that is still in flight. While a target is outstanding, `ptz_zoom_active_poll_seconds` (default `0.2`) controls the faster position poll used to report physical lens travel; after the target is reached, polling returns to `ptz_zoom_poll_seconds` (default `1.0`).
 
-Home Assistant discovery creates a separate **Rear Uniview Camera** device containing:
+The old `rear_zoom_*` MQTT device and options remain temporarily available for compatibility with existing dashboards. They are no longer the preferred implementation, and their command path is also non-blocking. New installations default `rear_zoom_enabled` to `false` and should use the camera's discovered per-camera Zoom entity instead.
 
-- **Zoom position** — current absolute zoom position shown as a percentage;
-- **Zoom preset** — a select containing the configured named absolute zoom positions;
-- **Zoom +** — increases the normalized zoom position by `rear_zoom_step`;
-- **Zoom −** — decreases the normalized zoom position by `rear_zoom_step`.
+ONVIF absolute zoom is normalized to `0.0` (fully wide) through `1.0` (fully telephoto). Some cameras quantize intermediate values internally; the reported Home Assistant state is therefore the camera's actual position rather than merely the last requested target.
 
-The +/- buttons are not timed continuous-move controls. Each press reads the camera's current ONVIF position and commands a new absolute position, preventing cumulative timing drift. The camera is polled periodically so manual zoom changes made elsewhere are also reflected in Home Assistant.
+If a camera advertises absolute zoom but reports no native ONVIF preset capacity, the bridge can augment it with software presets configured on that camera:
 
-ONVIF uses a normalized absolute range of `0.0` (fully wide) to `1.0` (fully telephoto). The IPC2322SB-DZK-I0 quantizes some intermediate values internally, so for a carefully chosen preset it is reasonable to use the exact value reported by the Zoom position sensor after positioning the lens.
+```yaml
+- source_id: 6
+  name: Rear Zoom
+  enabled: true
+  zoom_presets:
+    - name: Wide
+      position: 0.0
+    - name: Yard
+      position: 0.30
+    - name: Tele
+      position: 1.0
+```
+
+These presets are ordinary absolute zoom targets and appear as a **Zoom preset** select on the same camera device. The mechanism is not tied to D6 or to a model number. If ONVIF reports native preset capacity, the bridge does not publish the software-preset select, avoiding duplicate preset systems.
 
 ## Uniview Alarm Service / smart-event bridge (1.3.0)
 
@@ -224,7 +230,7 @@ Set `debug_event_retention` to a non-zero value to retain that many recent raw S
 
 ### Current milestone boundary
 
-Version 1.3.0 establishes the event transport, parsing, image and MQTT foundation. Capability-driven day/night, illumination, autofocus, generic PTZ/zoom discovery, ROI/rule entities and broader camera control migration remain subsequent bridge milestones. Existing D2/D6 controls continue to use the proven paths from earlier releases in the meantime.
+Version 1.3.0 establishes the event transport, parsing, image and MQTT foundation. Capability-driven PTZ/zoom discovery is implemented from version 1.7.0-alpha. Further capability-driven migration of remaining vendor-specific controls continues independently; existing proven fallbacks are retained where discovery is not yet reliable.
 
 ## Event snapshot history and alarm-only cameras
 

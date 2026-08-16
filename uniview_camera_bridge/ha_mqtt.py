@@ -185,6 +185,8 @@ class MQTTDiscovery:
                         logging.warning("Ignoring invalid D%d zoom percentage MQTT payload %r", source_id, payload)
                     else:
                         self.commands.put({"action": "camera_zoom_set", "source_id": source_id, "percent": value})
+                elif action == "zoom_preset":
+                    self.commands.put({"action": "camera_zoom_preset", "source_id": source_id, "name": payload})
         elif suffix == "rear_zoom/preset":
             self.commands.put({"action": "rear_zoom_preset", "name": payload})
         elif suffix == "rear_zoom/in":
@@ -419,6 +421,7 @@ class MQTTDiscovery:
                 "name": str(item.get("name") or f"Camera D{source_id}"),
                 "model": str(item.get("model") or "Uniview camera"),
                 "ptz_enabled": bool(item.get("ptz_enabled", False)),
+                "zoom_presets": item.get("zoom_presets") if isinstance(item.get("zoom_presets"), list) else [],
             })
         return result
 
@@ -578,18 +581,29 @@ class MQTTDiscovery:
                     "state_off": "OFF",
                     "icon": "mdi:shield-home-outline",
                 })
-                if caps.get("ptz_zoom"):
-                    self._camera_config(camera, "number", "zoom", {
-                        "name": "Zoom",
-                        "state_topic": f"{event_base}/controls",
-                        "value_template": "{{ value_json.zoom_percent if value_json.zoom_percent is not none else none }}",
-                        "command_topic": f"{self.base}/command/camera/D{source_id}/zoom/set",
-                        "min": 0,
-                        "max": 100,
-                        "step": 1,
-                        "mode": "slider",
-                        "unit_of_measurement": "%",
-                        "icon": "mdi:magnify",
+            if caps.get("ptz_zoom") and caps.get("ptz_zoom_absolute"):
+                self._camera_config(camera, "number", "zoom", {
+                    "name": "Zoom",
+                    "state_topic": f"{event_base}/controls",
+                    "value_template": "{{ value_json.zoom_percent if value_json.zoom_percent is not none else none }}",
+                    "command_topic": f"{self.base}/command/camera/D{source_id}/zoom/set",
+                    "min": 0,
+                    "max": 100,
+                    "step": 1,
+                    "mode": "slider",
+                    "unit_of_measurement": "%",
+                    "icon": "mdi:magnify",
+                })
+                bridge_presets = [
+                    item for item in camera.get("zoom_presets", [])
+                    if isinstance(item, dict) and str(item.get("name", "")).strip()
+                ]
+                if bridge_presets and not caps.get("ptz_native_presets"):
+                    self._camera_config(camera, "select", "zoom_preset", {
+                        "name": "Zoom preset",
+                        "command_topic": f"{self.base}/command/camera/D{source_id}/zoom_preset",
+                        "options": [str(item["name"]) for item in bridge_presets],
+                        "icon": "mdi:magnify-scan",
                     })
             if caps.get("illumination"):
                 self._camera_config(camera, "switch", "illumination", {

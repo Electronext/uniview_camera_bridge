@@ -497,6 +497,32 @@ class UniviewCamera:
                 result["timeout"] = timeout_values
         return result
 
+    def get_ptz_node_capabilities(self) -> dict[str, Any]:
+        """Return generic PTZ node capabilities relevant to bridge augmentation."""
+        ptz_url, _profiles = self._discover_onvif()
+        response = self._soap(
+            ptz_url,
+            '<tptz:GetNodes xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"/>',
+            "http://www.onvif.org/ver20/ptz/wsdl/GetNodes",
+        )
+        root = ET.fromstring(response.content)
+        maximum_presets = 0
+        home_supported = False
+        for element in root.iter():
+            name = _localname(element.tag)
+            if name == "MaximumNumberOfPresets" and element.text:
+                try:
+                    maximum_presets = max(maximum_presets, int(element.text.strip()))
+                except ValueError:
+                    pass
+            elif name == "HomeSupported" and element.text:
+                home_supported = home_supported or element.text.strip().lower() in ("true", "1")
+        return {
+            "maximum_presets": maximum_presets,
+            "presets_supported": maximum_presets > 0,
+            "home_supported": home_supported,
+        }
+
     def get_zoom(self, profile: str | None = None) -> float:
         ptz_url, profiles = self._discover_onvif()
         token = profile or profiles[0]
