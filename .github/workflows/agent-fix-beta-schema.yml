@@ -1,0 +1,103 @@
+name: Fix 1.7.0-beta1 schema
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/agent-fix-beta-schema.yml]
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # config.yaml: move software presets to a top-level list keyed by source_id.
+          p = Path('uniview_camera_bridge/config.yaml')
+          s = p.read_text()
+          old = '''  - source_id: 6\n    name: Rear Zoom\n    model: IPC2322SB-DZK-I0\n    enabled: true\n    zoom_presets:\n    - name: Wide\n      position: 0.0\n    - name: Medium\n      position: 0.5\n    - name: Tele\n      position: 1.0\n    - name: Night\n      position: 0.613333285\n'''
+          new = '''  - source_id: 6\n    name: Rear Zoom\n    model: IPC2322SB-DZK-I0\n    enabled: true\n'''
+          if old not in s:
+              raise SystemExit('D6 nested preset block not found')
+          s = s.replace(old, new)
+          marker = '''  debug_event_retention: 0\n  cameras:\n'''
+          insert = '''  debug_event_retention: 0\n  zoom_presets:\n  - source_id: 6\n    name: Wide\n    position: 0.0\n  - source_id: 6\n    name: Medium\n    position: 0.5\n  - source_id: 6\n    name: Tele\n    position: 1.0\n  - source_id: 6\n    name: Night\n    position: 0.613333285\n  cameras:\n'''
+          if marker not in s:
+              raise SystemExit('config options insertion marker not found')
+          s = s.replace(marker, insert, 1)
+          schema_old = '''  debug_event_retention: int(0,10000)\n  cameras:\n'''
+          schema_new = '''  debug_event_retention: int(0,10000)\n  zoom_presets:\n  - source_id: int(1,255)\n    name: str\n    position: float(0.0,1.0)\n  cameras:\n'''
+          if schema_old not in s:
+              raise SystemExit('config schema insertion marker not found')
+          s = s.replace(schema_old, schema_new, 1)
+          nested_schema = '''    ptz_enabled: bool?\n    zoom_presets: list?\n'''
+          if nested_schema not in s:
+              raise SystemExit('invalid nested schema block not found')
+          s = s.replace(nested_schema, '''    ptz_enabled: bool?\n''', 1)
+          p.write_text(s)
+
+          # ha_mqtt.py: camera definitions no longer own a third-level preset list.
+          p = Path('uniview_camera_bridge/ha_mqtt.py')
+          s = p.read_text()
+          s = s.replace('''                "ptz_enabled": bool(item.get("ptz_enabled", False)),\n                "zoom_presets": item.get("zoom_presets") if isinstance(item.get("zoom_presets"), list) else [],\n''', '''                "ptz_enabled": bool(item.get("ptz_enabled", False)),\n''')
+          old = '''                bridge_presets = [\n                    item for item in camera.get("zoom_presets", [])\n                    if isinstance(item, dict) and str(item.get("name", "")).strip()\n                ]\n'''
+          new = '''                bridge_presets = [\n                    item for item in self.options.get("zoom_presets", [])\n                    if isinstance(item, dict)\n                    and int(item.get("source_id", 0) or 0) == source_id\n                    and str(item.get("name", "")).strip()\n                ]\n'''
+          if old not in s:
+              raise SystemExit('ha_mqtt preset lookup not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # app.py: command handling filters the same top-level generic preset list.
+          p = Path('uniview_camera_bridge/app.py')
+          s = p.read_text()
+          old = '''                            camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), {})\n                            presets = camera_def.get("zoom_presets") or []\n                            requested = str(command.get("name", ""))\n'''
+          new = '''                            presets = [\n                                item for item in options.get("zoom_presets", [])\n                                if isinstance(item, dict) and int(item.get("source_id", 0) or 0) == source_id\n                            ]\n                            requested = str(command.get("name", ""))\n'''
+          if old not in s:
+              raise SystemExit('app preset lookup not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          # CHANGELOG wording.
+          p = Path('uniview_camera_bridge/CHANGELOG.md')
+          s = p.read_text()
+          if '## 1.7.0-alpha' in s:
+              s = s.replace('## 1.7.0-alpha', '## 1.7.0-beta1', 1)
+          note = '- Store bridge-side zoom presets in a Supervisor-compatible top-level `zoom_presets` list keyed by camera `source_id`.\n'
+          heading = '## 1.7.0-beta1\n\n'
+          if heading in s and note not in s:
+              s = s.replace(heading, heading + note, 1)
+          p.write_text(s)
+
+          # DOCS: replace per-camera example/description if present.
+          p = Path('uniview_camera_bridge/DOCS.md')
+          s = p.read_text()
+          s = s.replace('per-camera `zoom_presets`', 'top-level `zoom_presets` entries keyed by `source_id`')
+          p.write_text(s)
+          PY
+      - name: Validate
+        run: |
+          pip install --quiet pyyaml
+          python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/ha_mqtt.py uniview_camera_bridge/uniview.py
+          python - <<'PY'
+          import yaml
+          p='uniview_camera_bridge/config.yaml'
+          d=yaml.safe_load(open(p))
+          assert d['version']=='1.7.0-beta1'
+          assert d['schema']['zoom_presets'][0]['source_id']=='int(1,255)'
+          assert 'zoom_presets' not in d['schema']['cameras'][0]
+          assert any(x['source_id']==6 and x['name']=='Night' for x in d['options']['zoom_presets'])
+          print('config OK')
+          PY
+      - name: Commit
+        run: |
+          git config user.name D3XT3R
+          git config user.email d3xt3rsl4b@gmail.com
+          git add uniview_camera_bridge/config.yaml uniview_camera_bridge/app.py uniview_camera_bridge/ha_mqtt.py uniview_camera_bridge/CHANGELOG.md uniview_camera_bridge/DOCS.md
+          git commit -m "Fix beta software preset schema"
+          git push
