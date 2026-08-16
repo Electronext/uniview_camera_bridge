@@ -74,6 +74,8 @@ options:
     position: 0.5
   - name: Tele
     position: 1.0
+  - name: Night
+    position: 0.613333285
   history_max_rows: 10000
   drift_window_hours: 24
   alarm_service_enabled: true
@@ -134,6 +136,8 @@ options:
       position: 0.5
     - name: Tele
       position: 1.0
+    - name: Night
+      position: 0.613333285
   - source_id: 7
     name: Camera D7
     model: Uniview camera
@@ -236,9 +240,7 @@ schema:
     image_control_channel: int(0,2)?
     snapshot_channel: int(0,2)?
     ptz_enabled: bool?
-    zoom_presets:
-    - name: str
-      position: float(0.0,1.0)
+    zoom_presets: list?
   mqtt_enabled: bool
   mqtt_host: str
   mqtt_port: port
