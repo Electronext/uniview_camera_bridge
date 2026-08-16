@@ -1,10 +1,10 @@
-name: Apply generic camera capability migration
+name: Finalize generic camera capability migration
 on:
   push:
     branches: [agent/generic-camera-capabilities]
     paths: [.github/workflows/agent-generic-capabilities.yml]
 jobs:
-  patch:
+  finalize:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,12 +15,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Disable brittle legacy rear-loop matcher in helper
-        run: python -c "from pathlib import Path; p=Path('tools/agent_generic_capabilities.py'); s=p.read_text(); s=s.replace(\"if old_rear_wait not in text:\\n    raise SystemExit('legacy rear blocking loop not found')\\ntext = text.replace(old_rear_wait, new_rear_wait, 1)\", \"if old_rear_wait in text:\\n    text = text.replace(old_rear_wait, new_rear_wait, 1)\"); p.write_text(s)"
-      - name: Apply migration patch
-        run: python tools/agent_generic_capabilities.py
-      - name: Make legacy rear zoom non-blocking
-        run: python tools/agent_rear_nonblocking.py
+      - name: Update docs and new-install defaults
+        run: python tools/agent_docs_generic_ptz.py
       - name: Validate Python
         run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
       - name: Validate YAML parse
@@ -31,6 +27,6 @@ jobs:
         run: |
           git config user.name D3XT3R
           git config user.email d3xt3rsl4b@gmail.com
-          git add uniview_camera_bridge/app.py uniview_camera_bridge/config.yaml uniview_camera_bridge/CHANGELOG.md
-          git commit -m "Generalise camera PTZ capability discovery"
+          git add uniview_camera_bridge/config.yaml uniview_camera_bridge/DOCS.md
+          git commit -m "Document capability-driven PTZ discovery"
           git push
