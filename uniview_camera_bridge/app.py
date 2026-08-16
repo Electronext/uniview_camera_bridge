@@ -879,7 +879,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.7.0-alpha"
+    options["addon_version"] = "1.7.0-beta1"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -900,7 +900,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.7.0-alpha")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.7.0-beta1")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
