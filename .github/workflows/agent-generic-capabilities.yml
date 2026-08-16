@@ -20,34 +20,11 @@ jobs:
       - name: Apply migration patch
         run: python tools/agent_generic_capabilities.py
       - name: Make legacy rear zoom non-blocking
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('uniview_camera_bridge/app.py')
-          s = p.read_text()
-          fn = s.index('def execute_rear_zoom_command(')
-          start = s.index('    rear_camera.set_zoom(target)\n', fn)
-          ret = '    return rear_zoom_status(rear_camera, options)\n'
-          end = s.index(ret, start) + len(ret)
-          replacement = '''    rear_camera.set_zoom(target)
-    # Legacy compatibility path only: return immediately so later absolute
-    # targets are not queued behind completion of the previous motor move.
-    status = rear_zoom_status(rear_camera, options)
-    status["target_percent"] = round(target * 100.0, 1)
-    return status
-'''
-          s = s[:start] + replacement + s[end:]
-          p.write_text(s)
-          PY
+        run: python -c "from pathlib import Path; p=Path('uniview_camera_bridge/app.py'); s=p.read_text(); fn=s.index('def execute_rear_zoom_command('); start=s.index('    rear_camera.set_zoom(target)\\n', fn); ret='    return rear_zoom_status(rear_camera, options)\\n'; end=s.index(ret,start)+len(ret); replacement='    rear_camera.set_zoom(target)\\n    # Legacy compatibility path only: return immediately so later absolute\\n    # targets are not queued behind completion of the previous motor move.\\n    status = rear_zoom_status(rear_camera, options)\\n    status[\"target_percent\"] = round(target * 100.0, 1)\\n    return status\\n'; p.write_text(s[:start]+replacement+s[end:])"
       - name: Validate Python
         run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
       - name: Validate YAML parse
-        run: |
-          python - <<'PY'
-          import yaml
-          yaml.safe_load(open('uniview_camera_bridge/config.yaml'))
-          print('config yaml ok')
-          PY
+        run: python -c "import yaml; yaml.safe_load(open('uniview_camera_bridge/config.yaml')); print('config yaml ok')"
       - name: Commit
         run: |
           git config user.name D3XT3R
