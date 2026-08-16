@@ -1,0 +1,34 @@
+name: Apply generic camera capability migration
+on:
+  push:
+    branches: [agent/generic-camera-capabilities]
+    paths: [.github/workflows/agent-generic-capabilities.yml]
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/generic-camera-capabilities
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply migration patch
+        run: python tools/agent_generic_capabilities.py
+      - name: Validate Python
+        run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
+      - name: Validate YAML parse
+        run: python - <<'PY'
+          import yaml
+          yaml.safe_load(open('uniview_camera_bridge/config.yaml'))
+          print('config yaml ok')
+          PY
+      - name: Commit
+        run: |
+          git config user.name D3XT3R
+          git config user.email d3xt3rsl4b@gmail.com
+          git add uniview_camera_bridge/app.py uniview_camera_bridge/config.yaml uniview_camera_bridge/CHANGELOG.md
+          git commit -m "Generalise camera PTZ capability discovery"
+          git push
