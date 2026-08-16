@@ -1,0 +1,32 @@
+name: Apply 1.7.0-alpha preset augmentation
+on:
+  push:
+    branches: [agent/generic-camera-capabilities]
+    paths: [.github/workflows/agent-alpha-presets.yml]
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/generic-camera-capabilities
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply patch
+        run: python tools/agent_alpha_presets.py
+      - name: Validate Python
+        run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
+      - name: Validate YAML
+        run: |
+          python -m pip install --quiet PyYAML
+          python -c "import yaml; yaml.safe_load(open('uniview_camera_bridge/config.yaml')); print('config yaml ok')"
+      - name: Commit
+        run: |
+          git config user.name D3XT3R
+          git config user.email d3xt3rsl4b@gmail.com
+          git add uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py uniview_camera_bridge/config.yaml uniview_camera_bridge/CHANGELOG.md uniview_camera_bridge/DOCS.md
+          git commit -m "Add bridge-side zoom preset augmentation"
+          git push
