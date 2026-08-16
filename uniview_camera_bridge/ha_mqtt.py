@@ -421,7 +421,6 @@ class MQTTDiscovery:
                 "name": str(item.get("name") or f"Camera D{source_id}"),
                 "model": str(item.get("model") or "Uniview camera"),
                 "ptz_enabled": bool(item.get("ptz_enabled", False)),
-                "zoom_presets": item.get("zoom_presets") if isinstance(item.get("zoom_presets"), list) else [],
             })
         return result
 
@@ -595,8 +594,10 @@ class MQTTDiscovery:
                     "icon": "mdi:magnify",
                 })
                 bridge_presets = [
-                    item for item in camera.get("zoom_presets", [])
-                    if isinstance(item, dict) and str(item.get("name", "")).strip()
+                    item for item in self.options.get("zoom_presets", [])
+                    if isinstance(item, dict)
+                    and int(item.get("source_id", 0) or 0) == source_id
+                    and str(item.get("name", "")).strip()
                 ]
                 if bridge_presets and not caps.get("ptz_native_presets"):
                     self._camera_config(camera, "select", "zoom_preset", {

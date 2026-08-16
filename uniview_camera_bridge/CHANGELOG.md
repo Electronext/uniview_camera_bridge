@@ -1,5 +1,6 @@
-## 1.7.0-alpha
+## 1.7.0-beta1
 
+- Store bridge-side zoom presets in a Supervisor-compatible top-level `zoom_presets` list keyed by camera `source_id`.
 - Make ONVIF PTZ/zoom discovery capability-driven for every enabled camera instead of requiring a hard-coded full-PTZ flag.
 - Treat absolute, relative and continuous zoom plus pan/tilt spaces as independent capabilities, allowing zoom-only motorised cameras to use the generic camera control path.
 - Make absolute zoom commands non-blocking so a newer target can replace an in-flight target.

@@ -1179,8 +1179,10 @@ def main() -> int:
                                 logging.info("D2 auto-guard -> %s", "on" if enabled else "off")
                         elif action == "camera_zoom_preset":
                             caps = camera_caps.get(source_id, {})
-                            camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), {})
-                            presets = camera_def.get("zoom_presets") or []
+                            presets = [
+                                item for item in options.get("zoom_presets", [])
+                                if isinstance(item, dict) and int(item.get("source_id", 0) or 0) == source_id
+                            ]
                             requested = str(command.get("name", ""))
                             preset = next((item for item in presets if isinstance(item, dict) and str(item.get("name", "")) == requested), None)
                             if caps.get("ptz_native_presets"):

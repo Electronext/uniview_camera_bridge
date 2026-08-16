@@ -99,6 +99,19 @@ options:
   alarm_snapshot_channel: 1
   debug_person_attributes: false
   debug_event_retention: 0
+  zoom_presets:
+  - source_id: 6
+    name: Wide
+    position: 0.0
+  - source_id: 6
+    name: Medium
+    position: 0.5
+  - source_id: 6
+    name: Tele
+    position: 1.0
+  - source_id: 6
+    name: Night
+    position: 0.613333285
   cameras:
   - source_id: 1
     name: Driveway
@@ -129,15 +142,6 @@ options:
     name: Rear Zoom
     model: IPC2322SB-DZK-I0
     enabled: true
-    zoom_presets:
-    - name: Wide
-      position: 0.0
-    - name: Medium
-      position: 0.5
-    - name: Tele
-      position: 1.0
-    - name: Night
-      position: 0.613333285
   - source_id: 7
     name: Camera D7
     model: Uniview camera
@@ -232,6 +236,10 @@ schema:
   alarm_snapshot_channel: int(0,2)
   debug_person_attributes: bool
   debug_event_retention: int(0,10000)
+  zoom_presets:
+  - source_id: int(1,255)
+    name: str
+    position: float(0.0,1.0)
   cameras:
   - source_id: int(1,255)
     name: str
@@ -240,7 +248,6 @@ schema:
     image_control_channel: int(0,2)?
     snapshot_channel: int(0,2)?
     ptz_enabled: bool?
-    zoom_presets: list?
   mqtt_enabled: bool
   mqtt_host: str
   mqtt_port: port
