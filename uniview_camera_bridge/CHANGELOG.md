@@ -1,3 +1,11 @@
+## 1.6.2
+
+- Make ONVIF PTZ/zoom discovery capability-driven for every enabled camera instead of requiring a hard-coded full-PTZ flag.
+- Treat absolute, relative and continuous zoom plus pan/tilt spaces as independent capabilities, allowing zoom-only motorised cameras to use the generic camera control path.
+- Make absolute zoom commands non-blocking so a newer target can replace an in-flight target.
+- Poll reported zoom position at 0.2 s while a target is outstanding, then return to the normal idle poll interval.
+- Keep the legacy `rear_zoom_*` path only as a non-blocking compatibility path; new control should use `camera/Dn/zoom/set`.
+
 ## 1.5.13
 
 - Switch normal Auto/Day/Night control for all enabled cameras to ONVIF Imaging `GetImagingSettings` / `SetImagingSettings`, matching direct camera-side captures of the NVR/web UI.

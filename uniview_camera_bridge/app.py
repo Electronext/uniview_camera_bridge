@@ -578,6 +578,25 @@ def camera_definitions(options: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def ptz_capability_flags(options_data: dict[str, Any]) -> dict[str, bool]:
+    """Normalise ONVIF PTZ spaces into capability flags used by the bridge.
+
+    PTZ is a collection of independent capabilities. A camera may expose zoom
+    without pan/tilt (for example a motorised varifocal camera), so discovery
+    must not depend on a manually-declared full-PTZ flag.
+    """
+    spaces = options_data.get("spaces") if isinstance(options_data, dict) else {}
+    spaces = spaces if isinstance(spaces, dict) else {}
+    return {
+        "ptz_zoom_absolute": bool(spaces.get("AbsoluteZoomPositionSpace")),
+        "ptz_zoom_relative": bool(spaces.get("RelativeZoomTranslationSpace")),
+        "ptz_zoom_continuous": bool(spaces.get("ContinuousZoomVelocitySpace")),
+        "ptz_pan_tilt_absolute": bool(spaces.get("AbsolutePanTiltPositionSpace")),
+        "ptz_pan_tilt_relative": bool(spaces.get("RelativePanTiltTranslationSpace")),
+        "ptz_pan_tilt_continuous": bool(spaces.get("ContinuousPanTiltVelocitySpace")),
+    }
+
+
 def build_camera_clients(options: dict[str, Any]) -> dict[int, UniviewCamera]:
     host = str(options.get("alarm_snapshot_host", "192.168.90.5")).strip()
     port_base = int(options.get("alarm_snapshot_port_base", 30000))
@@ -798,21 +817,11 @@ def execute_rear_zoom_command(
         raise ValueError(f"Unsupported rear zoom command {action!r}")
 
     rear_camera.set_zoom(target)
-    tolerance = float(options.get("rear_zoom_preset_tolerance", 0.006))
-    deadline = time.monotonic() + float(options.get("rear_zoom_move_timeout_seconds", 8.0))
-    position = current
-    while time.monotonic() < deadline:
-        time.sleep(0.20)
-        position = rear_camera.get_zoom()
-        if abs(position - target) <= tolerance:
-            break
-    if abs(position - target) > tolerance:
-        logging.warning(
-            "Rear camera zoom did not settle at %.6f within timeout; reported %.6f",
-            target,
-            position,
-        )
-    return rear_zoom_status(rear_camera, options)
+    # Legacy compatibility path only: return immediately so later absolute
+    # targets are not queued behind completion of the previous motor move.
+    status = rear_zoom_status(rear_camera, options)
+    status["target_percent"] = round(target * 100.0, 1)
+    return status
 
 
 def execute_command(command: dict[str, Any], camera: UniviewCamera, options: dict[str, Any], templates: dict[str, list[tuple[str, np.ndarray]]], state: dict[str, Any], ha: HomeAssistantClient) -> dict[str, Any] | None:
@@ -870,7 +879,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.5.13"
+    options["addon_version"] = "1.6.2"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -891,32 +900,37 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.6.1")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.6.2")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
     camera_caps, camera_control_channels = probe_camera_controls(camera_clients, camera_defs)
     for camera_def in camera_defs:
         source_id = int(camera_def.get("source_id", 0))
-        if not bool(camera_def.get("ptz_enabled", False)):
-            continue
         client = camera_clients.get(source_id)
         if client is None:
             continue
+        caps = camera_caps.setdefault(source_id, {})
         try:
             ptz_options = client.get_ptz_configuration_options()
-            camera_caps.setdefault(source_id, {})["ptz_options"] = ptz_options
-            logging.info("D%d ONVIF PTZ configuration options: %s", source_id, json.dumps(ptz_options, sort_keys=True))
+            caps["ptz_options"] = ptz_options
+            caps.update(ptz_capability_flags(ptz_options))
+            logging.info("D%d ONVIF PTZ capabilities: %s", source_id, json.dumps({
+                key: value for key, value in caps.items() if key.startswith("ptz_") and key != "ptz_options"
+            }, sort_keys=True))
         except Exception as exc:
-            logging.warning("D%d ONVIF PTZ configuration-options probe failed: %s", source_id, exc)
-        try:
-            position = client.get_zoom()
-            camera_caps.setdefault(source_id, {})["ptz_zoom"] = True
-            camera_caps[source_id]["zoom_percent"] = round(position * 100.0, 1)
-            logging.info("D%d ONVIF zoom position: %.6f (%.1f%%)", source_id, position, position * 100.0)
-        except Exception as exc:
-            camera_caps.setdefault(source_id, {})["ptz_zoom"] = False
-            logging.warning("D%d ONVIF zoom-position probe failed: %s", source_id, exc)
+            logging.debug("D%d ONVIF PTZ configuration-options probe unavailable: %s", source_id, exc)
+        if caps.get("ptz_zoom_absolute"):
+            try:
+                position = client.get_zoom()
+                caps["ptz_zoom"] = True
+                caps["zoom_percent"] = round(position * 100.0, 1)
+                logging.info("D%d ONVIF absolute zoom: available, position %.6f (%.1f%%)", source_id, position, position * 100.0)
+            except Exception as exc:
+                caps["ptz_zoom"] = False
+                logging.warning("D%d advertises absolute zoom but GetStatus failed: %s", source_id, exc)
+        else:
+            caps["ptz_zoom"] = False
     options["_camera_capabilities"] = camera_caps
     mqtt = MQTTDiscovery(options, commands)
     mqtt.start()
@@ -1011,6 +1025,9 @@ def main() -> int:
     last_lamp_watch: dict[int, str] = {}
     ptz_stop_deadlines: dict[int, float] = {}
     ptz_zoom_poll = max(0.2, float(options.get("ptz_zoom_poll_seconds", 1.0)))
+    ptz_zoom_active_poll = max(0.1, float(options.get("ptz_zoom_active_poll_seconds", 0.2)))
+    ptz_zoom_tolerance = max(0.05, float(options.get("ptz_zoom_target_tolerance_percent", 0.5)))
+    ptz_zoom_targets: dict[int, float] = {}
     next_ptz_zoom_poll: dict[int, float] = {
         source_id: 0.0 for source_id, caps in camera_caps.items() if caps.get("ptz_zoom")
     }
@@ -1152,36 +1169,48 @@ def main() -> int:
                                 })
                                 logging.info("D2 auto-guard -> %s", "on" if enabled else "off")
                         elif action == "camera_zoom_set":
-                            camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), None)
-                            if not camera_def or not bool(camera_def.get("ptz_enabled", False)) or not camera_caps.get(source_id, {}).get("ptz_zoom"):
-                                logging.warning("D%d does not expose absolute bridge zoom control", source_id)
+                            caps = camera_caps.get(source_id, {})
+                            if not caps.get("ptz_zoom") or not caps.get("ptz_zoom_absolute"):
+                                logging.warning("D%d does not expose ONVIF absolute zoom control", source_id)
                             else:
                                 percent = float(command.get("percent"))
                                 if not 0.0 <= percent <= 100.0:
                                     raise ValueError(f"D{source_id} zoom percentage must be between 0 and 100, got {percent}")
                                 client.set_zoom(percent / 100.0)
-                                time.sleep(0.15)
-                                position = client.get_zoom()
-                                camera_caps[source_id]["zoom_percent"] = round(position * 100.0, 1)
-                                mqtt.publish_camera_controls(source_id, {"zoom_percent": camera_caps[source_id]["zoom_percent"]})
-                                next_ptz_zoom_poll[source_id] = time.monotonic() + ptz_zoom_poll
-                                logging.info("D%d absolute zoom -> %.1f%% (reported %.1f%%)", source_id, percent, position * 100.0)
+                                # AbsoluteMove is intentionally non-blocking. The camera may
+                                # accept a newer target while still travelling; position is
+                                # observed independently by the fast active-motion poll.
+                                ptz_zoom_targets[source_id] = percent
+                                next_ptz_zoom_poll[source_id] = time.monotonic()
+                                logging.info("D%d absolute zoom target -> %.1f%%", source_id, percent)
                         elif action == "camera_ptz":
-                            camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), None)
-                            if not camera_def or not bool(camera_def.get("ptz_enabled", False)):
-                                logging.warning("D%d does not have bridge PTZ control enabled", source_id)
-                            elif bool(command.get("stop", False)):
-                                client.stop_move()
+                            camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), {})
+                            caps = camera_caps.get(source_id, {})
+                            if bool(command.get("stop", False)):
+                                if caps.get("ptz_zoom_continuous") or caps.get("ptz_pan_tilt_continuous"):
+                                    client.stop_move()
                                 ptz_stop_deadlines.pop(source_id, None)
                                 logging.debug("D%d PTZ stop", source_id)
                             else:
                                 pan = max(-1.0, min(1.0, float(command.get("pan", 0.0))))
                                 tilt = max(-1.0, min(1.0, float(command.get("tilt", 0.0))))
                                 zoom = max(-1.0, min(1.0, float(command.get("zoom", 0.0))))
-                                client.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
-                                timeout = float(options.get("ptz_safety_timeout_seconds", 3.0))
-                                ptz_stop_deadlines[source_id] = time.monotonic() + timeout
-                                logging.debug("D%d PTZ velocity pan=%.3f tilt=%.3f zoom=%.3f", source_id, pan, tilt, zoom)
+                                wants_pan_tilt = abs(pan) >= 1e-6 or abs(tilt) >= 1e-6
+                                wants_zoom = abs(zoom) >= 1e-6
+                                pan_tilt_allowed = bool(camera_def.get("ptz_enabled", False)) and caps.get("ptz_pan_tilt_continuous")
+                                zoom_allowed = caps.get("ptz_zoom_continuous")
+                                if wants_pan_tilt and not pan_tilt_allowed:
+                                    logging.warning("D%d does not expose enabled continuous pan/tilt", source_id)
+                                elif wants_zoom and not zoom_allowed:
+                                    logging.warning("D%d does not expose continuous zoom", source_id)
+                                elif not wants_pan_tilt and not wants_zoom:
+                                    client.stop_move()
+                                    ptz_stop_deadlines.pop(source_id, None)
+                                else:
+                                    client.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
+                                    timeout = float(options.get("ptz_safety_timeout_seconds", 3.0))
+                                    ptz_stop_deadlines[source_id] = time.monotonic() + timeout
+                                    logging.debug("D%d PTZ velocity pan=%.3f tilt=%.3f zoom=%.3f", source_id, pan, tilt, zoom)
                     elif action.startswith("rear_zoom_"):
                         if rear_camera is None:
                             logging.warning("Rear zoom command ignored because rear camera is disabled")
@@ -1213,11 +1242,17 @@ def main() -> int:
                         continue
                     try:
                         position = client.get_zoom()
-                        camera_caps[source_id]["zoom_percent"] = round(position * 100.0, 1)
-                        mqtt.publish_camera_controls(source_id, {"zoom_percent": camera_caps[source_id]["zoom_percent"]})
+                        reported = round(position * 100.0, 1)
+                        camera_caps[source_id]["zoom_percent"] = reported
+                        mqtt.publish_camera_controls(source_id, {"zoom_percent": reported})
+                        target = ptz_zoom_targets.get(source_id)
+                        if target is not None and abs(reported - target) <= ptz_zoom_tolerance:
+                            ptz_zoom_targets.pop(source_id, None)
+                            target = None
+                        next_ptz_zoom_poll[source_id] = now_mono + (ptz_zoom_active_poll if target is not None else ptz_zoom_poll)
                     except Exception as exc:
                         logging.debug("D%d zoom-position poll failed: %s", source_id, exc)
-                    next_ptz_zoom_poll[source_id] = now_mono + ptz_zoom_poll
+                        next_ptz_zoom_poll[source_id] = now_mono + ptz_zoom_poll
 
                 if time.monotonic() >= next_check:
                     status = perform_check(camera, options, templates, state, ha)
