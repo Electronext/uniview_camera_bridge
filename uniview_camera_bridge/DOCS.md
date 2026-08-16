@@ -105,7 +105,7 @@ The offset and error sensors use the centre of the configured acceptable rectang
 
 ## Capability-driven PTZ and motorised zoom
 
-From version 1.6.2, PTZ is treated as a set of independently discovered ONVIF capabilities rather than as a camera type or model-specific feature. Every enabled camera is probed through its configured/NVR-forwarded endpoint for the PTZ spaces it actually advertises.
+From version 1.7.0-alpha, PTZ is treated as a set of independently discovered ONVIF capabilities rather than as a camera type or model-specific feature. Every enabled camera is probed through its configured/NVR-forwarded endpoint for the PTZ spaces it actually advertises.
 
 The bridge distinguishes, independently:
 
@@ -129,6 +129,23 @@ and the bridge reports the camera's actual position on the normal per-camera con
 The old `rear_zoom_*` MQTT device and options remain temporarily available for compatibility with existing dashboards. They are no longer the preferred implementation, and their command path is also non-blocking. New installations default `rear_zoom_enabled` to `false` and should use the camera's discovered per-camera Zoom entity instead.
 
 ONVIF absolute zoom is normalized to `0.0` (fully wide) through `1.0` (fully telephoto). Some cameras quantize intermediate values internally; the reported Home Assistant state is therefore the camera's actual position rather than merely the last requested target.
+
+If a camera advertises absolute zoom but reports no native ONVIF preset capacity, the bridge can augment it with software presets configured on that camera:
+
+```yaml
+- source_id: 6
+  name: Rear Zoom
+  enabled: true
+  zoom_presets:
+    - name: Wide
+      position: 0.0
+    - name: Yard
+      position: 0.30
+    - name: Tele
+      position: 1.0
+```
+
+These presets are ordinary absolute zoom targets and appear as a **Zoom preset** select on the same camera device. The mechanism is not tied to D6 or to a model number. If ONVIF reports native preset capacity, the bridge does not publish the software-preset select, avoiding duplicate preset systems.
 
 ## Uniview Alarm Service / smart-event bridge (1.3.0)
 
@@ -213,7 +230,7 @@ Set `debug_event_retention` to a non-zero value to retain that many recent raw S
 
 ### Current milestone boundary
 
-Version 1.3.0 establishes the event transport, parsing, image and MQTT foundation. Capability-driven PTZ/zoom discovery is implemented from version 1.6.2. Further capability-driven migration of remaining vendor-specific controls continues independently; existing proven fallbacks are retained where discovery is not yet reliable.
+Version 1.3.0 establishes the event transport, parsing, image and MQTT foundation. Capability-driven PTZ/zoom discovery is implemented from version 1.7.0-alpha. Further capability-driven migration of remaining vendor-specific controls continues independently; existing proven fallbacks are retained where discovery is not yet reliable.
 
 ## Event snapshot history and alarm-only cameras
 

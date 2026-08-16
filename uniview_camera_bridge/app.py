@@ -879,7 +879,7 @@ def main() -> int:
     if int(options["acceptable_x_min"]) > int(options["acceptable_x_max"]) or int(options["acceptable_y_min"]) > int(options["acceptable_y_max"]):
         raise RuntimeError("Acceptable-position minimums must not exceed maximums")
 
-    options["addon_version"] = "1.6.2"
+    options["addon_version"] = "1.7.0-alpha"
     PERSIST_DIR.mkdir(parents=True, exist_ok=True)
     templates = load_templates()
     state = load_json(STATE_PATH)
@@ -900,7 +900,7 @@ def main() -> int:
     ha = HomeAssistantClient(float(options["request_timeout_seconds"]))
     commands: queue.Queue[dict[str, Any]] = queue.Queue()
     logging.info("=" * 78)
-    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.6.2")
+    logging.info("UNIVIEW CAMERA BRIDGE STARTING - version 1.7.0-alpha")
     logging.info("=" * 78)
     camera_clients = build_camera_clients(options)
     camera_defs = camera_definitions(options)
@@ -920,6 +920,15 @@ def main() -> int:
             }, sort_keys=True))
         except Exception as exc:
             logging.debug("D%d ONVIF PTZ configuration-options probe unavailable: %s", source_id, exc)
+        try:
+            node_caps = client.get_ptz_node_capabilities()
+            caps["ptz_max_presets"] = int(node_caps.get("maximum_presets", 0))
+            caps["ptz_native_presets"] = bool(node_caps.get("presets_supported", False))
+            caps["ptz_home_supported"] = bool(node_caps.get("home_supported", False))
+        except Exception as exc:
+            caps["ptz_max_presets"] = 0
+            caps["ptz_native_presets"] = False
+            logging.debug("D%d ONVIF PTZ node-capability probe unavailable: %s", source_id, exc)
         if caps.get("ptz_zoom_absolute"):
             try:
                 position = client.get_zoom()
@@ -1168,6 +1177,27 @@ def main() -> int:
                                     "auto_guard": enabled,
                                 })
                                 logging.info("D2 auto-guard -> %s", "on" if enabled else "off")
+                        elif action == "camera_zoom_preset":
+                            caps = camera_caps.get(source_id, {})
+                            camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), {})
+                            presets = camera_def.get("zoom_presets") or []
+                            requested = str(command.get("name", ""))
+                            preset = next((item for item in presets if isinstance(item, dict) and str(item.get("name", "")) == requested), None)
+                            if caps.get("ptz_native_presets"):
+                                logging.warning("D%d has native ONVIF presets; bridge-side zoom preset ignored", source_id)
+                            elif not caps.get("ptz_zoom") or not caps.get("ptz_zoom_absolute"):
+                                logging.warning("D%d does not expose ONVIF absolute zoom control", source_id)
+                            elif preset is None:
+                                logging.warning("D%d unknown bridge zoom preset %r", source_id, requested)
+                            else:
+                                position = float(preset.get("position"))
+                                if not 0.0 <= position <= 1.0:
+                                    raise ValueError(f"D{source_id} bridge zoom preset {requested!r} position must be 0..1")
+                                percent = position * 100.0
+                                client.set_zoom(position)
+                                ptz_zoom_targets[source_id] = percent
+                                next_ptz_zoom_poll[source_id] = time.monotonic()
+                                logging.info("D%d bridge zoom preset %s -> %.1f%%", source_id, requested, percent)
                         elif action == "camera_zoom_set":
                             caps = camera_caps.get(source_id, {})
                             if not caps.get("ptz_zoom") or not caps.get("ptz_zoom_absolute"):

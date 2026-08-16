@@ -1,5 +1,5 @@
 name: Uniview Camera Bridge
-version: 1.6.2
+version: 1.7.0-alpha
 slug: uniview_camera_bridge
 description: Bridges Uniview smart events and camera controls into Home Assistant
   while preserving PTZ drift monitoring and motorised-zoom controls.
@@ -127,6 +127,13 @@ options:
     name: Rear Zoom
     model: IPC2322SB-DZK-I0
     enabled: true
+    zoom_presets:
+    - name: Wide
+      position: 0.0
+    - name: Medium
+      position: 0.5
+    - name: Tele
+      position: 1.0
   - source_id: 7
     name: Camera D7
     model: Uniview camera
@@ -229,6 +236,9 @@ schema:
     image_control_channel: int(0,2)?
     snapshot_channel: int(0,2)?
     ptz_enabled: bool?
+    zoom_presets:
+    - name: str
+      position: float(0.0,1.0)
   mqtt_enabled: bool
   mqtt_host: str
   mqtt_port: port
