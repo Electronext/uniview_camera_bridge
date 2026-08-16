@@ -15,10 +15,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Fix helper for current rear-zoom settle loop
-        run: python -c "from pathlib import Path; p=Path('tools/agent_generic_capabilities.py'); s=p.read_text(); s=s.replace('    else:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",', '    if abs(position - target) > tolerance:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",', 1); p.write_text(s)"
+      - name: Disable brittle legacy rear-loop matcher in helper
+        run: python -c "from pathlib import Path; p=Path('tools/agent_generic_capabilities.py'); s=p.read_text(); s=s.replace(\"if old_rear_wait not in text:\\n    raise SystemExit('legacy rear blocking loop not found')\\ntext = text.replace(old_rear_wait, new_rear_wait, 1)\", \"if old_rear_wait in text:\\n    text = text.replace(old_rear_wait, new_rear_wait, 1)\"); p.write_text(s)"
       - name: Apply migration patch
         run: python tools/agent_generic_capabilities.py
+      - name: Make legacy rear zoom non-blocking
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('uniview_camera_bridge/app.py')
+          s = p.read_text()
+          fn = s.index('def execute_rear_zoom_command(')
+          start = s.index('    rear_camera.set_zoom(target)\n', fn)
+          ret = '    return rear_zoom_status(rear_camera, options)\n'
+          end = s.index(ret, start) + len(ret)
+          replacement = '''    rear_camera.set_zoom(target)
+    # Legacy compatibility path only: return immediately so later absolute
+    # targets are not queued behind completion of the previous motor move.
+    status = rear_zoom_status(rear_camera, options)
+    status["target_percent"] = round(target * 100.0, 1)
+    return status
+'''
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s)
+          PY
       - name: Validate Python
         run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
       - name: Validate YAML parse
