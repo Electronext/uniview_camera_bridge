@@ -16,36 +16,14 @@ jobs:
         with:
           python-version: '3.11'
       - name: Fix helper for current rear-zoom settle loop
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('tools/agent_generic_capabilities.py')
-          s = p.read_text()
-          s = s.replace(
-              '''    else:
-        logging.warning(
-            "Rear camera zoom did not settle at %.6f within timeout; reported %.6f",
-            target,
-            position,
-        )
-''',
-              '''    if abs(position - target) > tolerance:
-        logging.warning(
-            "Rear camera zoom did not settle at %.6f within timeout; reported %.6f",
-            target,
-            position,
-        )
-''',
-              1,
-          )
-          p.write_text(s)
-          PY
+        run: python -c "from pathlib import Path; p=Path('tools/agent_generic_capabilities.py'); s=p.read_text(); s=s.replace('    else:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",', '    if abs(position - target) > tolerance:\\n        logging.warning(\\n            \\\"Rear camera zoom did not settle at %.6f within timeout; reported %.6f\\\",', 1); p.write_text(s)"
       - name: Apply migration patch
         run: python tools/agent_generic_capabilities.py
       - name: Validate Python
         run: python -m py_compile uniview_camera_bridge/app.py uniview_camera_bridge/uniview.py uniview_camera_bridge/ha_mqtt.py
       - name: Validate YAML parse
-        run: python - <<'PY'
+        run: |
+          python - <<'PY'
           import yaml
           yaml.safe_load(open('uniview_camera_bridge/config.yaml'))
           print('config yaml ok')
