@@ -41,11 +41,11 @@ class PTZPosition:
     error:str|None=None; utc_time:str|None=None
 
 class ONVIFCamera:
-    def __init__(self,host,username,password,timeout=15.0,*,rewrite_xaddr_host=True,action_in_content_type=True,nonce_encoding=WSSE_LEGACY,session=None):
+    def __init__(self,host,username,password,timeout=15.0,*,rewrite_xaddr_host=True,action_in_content_type=True,nonce_encoding=WSSE_LEGACY,prefer_getservices=True,session=None):
         if not host.startswith(('http://','https://')):host='http://'+host
         self.base=host.rstrip('/'); self.username=username; self.password=password
         self.timeout=float(timeout); self.rewrite=bool(rewrite_xaddr_host)
-        self.action_in_content_type=bool(action_in_content_type); self.nonce_encoding=nonce_encoding
+        self.action_in_content_type=bool(action_in_content_type); self.nonce_encoding=nonce_encoding; self.prefer_getservices=bool(prefer_getservices)
         self.session=session or requests.Session(); self._services=None; self._profiles=None; self._configs={}
 
     def _wsse(self):
@@ -69,24 +69,29 @@ class ONVIFCamera:
     def services(self):
         if self._services:return dict(self._services)
         url=self.base+'/onvif/device_service'; out={}
-        try:
-            r=self.soap(url,f'<tds:GetServices xmlns:tds="{DEVICE_NS}"><tds:IncludeCapability>false</tds:IncludeCapability></tds:GetServices>',DEVICE_NS+'/GetServices')
-            root=ET.fromstring(r.content)
+        def getservices():
+            r=self.soap(url,f'<tds:GetServices xmlns:tds="{DEVICE_NS}"><tds:IncludeCapability>true</tds:IncludeCapability></tds:GetServices>',DEVICE_NS+'/GetServices')
+            root=ET.fromstring(r.content); found={}
             for svc in root.iter():
                 if ln(svc.tag)!='Service':continue
                 ns=x=None
                 for c in svc:
                     if ln(c.tag)=='Namespace' and c.text:ns=c.text.strip()
                     elif ln(c.tag)=='XAddr' and c.text:x=c.text.strip()
-                if ns and x:out[ns]=self._norm(x)
-        except Exception:
+                if ns and x:found[ns]=self._norm(x)
+            return found
+        def capabilities():
             r=self.soap(url,f'<tds:GetCapabilities xmlns:tds="{DEVICE_NS}"><tds:Category>All</tds:Category></tds:GetCapabilities>',DEVICE_NS+'/GetCapabilities')
-            root=ET.fromstring(r.content)
+            root=ET.fromstring(r.content); found={}
             for p in root.iter():
                 ns={'Media':MEDIA_NS,'PTZ':PTZ_NS}.get(ln(p.tag))
                 if not ns:continue
                 x=next((c.text.strip() for c in p.iter() if ln(c.tag)=='XAddr' and c.text),None)
-                if x:out[ns]=self._norm(x)
+                if x:found[ns]=self._norm(x)
+            return found
+        first,second=(getservices,capabilities) if self.prefer_getservices else (capabilities,getservices)
+        try:out=first()
+        except Exception:out=second()
         out.setdefault(MEDIA_NS,self.base+'/onvif/media'); out.setdefault(PTZ_NS,self.base+'/onvif/ptz')
         self._services=out; return dict(out)
 
@@ -213,10 +218,9 @@ class ONVIFCamera:
         token=self._profile(profile); body=f'<tptz:GotoPreset xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PresetToken>{preset}</tptz:PresetToken></tptz:GotoPreset>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/GotoPreset')
 
-    # Stable bridge-facing method names.
-    get_services = services
-    get_device_information = device_information
-    get_ptz_configuration_options = ptz_options
-    get_ptz_node_capabilities = node_capabilities
-    get_status = status
-    get_presets = presets
+    get_services=services
+    get_device_information=device_information
+    get_ptz_configuration_options=ptz_options
+    get_ptz_node_capabilities=node_capabilities
+    get_status=status
+    get_presets=presets
