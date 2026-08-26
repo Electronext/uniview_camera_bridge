@@ -24,6 +24,10 @@ def patch_uniview_camera(uniview_class) -> None:
             timeout=timeout,
             rewrite_xaddr_host=True,
             action_in_content_type=True,
+            # Preserve the proven Uniview/NVR discovery order. The Tapo bridge
+            # uses GetServices first because its Media/PTZ services share one
+            # /onvif/service endpoint.
+            prefer_getservices=False,
         )
 
     def get_ptz_configuration_options(self, profile=None):
