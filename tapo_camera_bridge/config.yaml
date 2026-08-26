@@ -1,0 +1,52 @@
+name: Tapo Camera Bridge
+version: 0.1.0
+slug: tapo_camera_bridge
+description: Local ONVIF PTZ bridge for TP-Link Tapo and compatible cameras
+url: https://github.com/Electronext/uniview_camera_bridge
+arch:
+- aarch64
+- amd64
+startup: services
+boot: auto
+init: false
+host_network: true
+options:
+  cameras:
+  - id: c220
+    name: Indoor PTZ
+    host: 192.168.90.113:2020
+    username: viewer
+    password: ''
+    enabled: true
+  request_timeout_seconds: 15
+  position_poll_seconds: 1.0
+  active_position_poll_seconds: 0.2
+  ptz_safety_timeout_seconds: 3.0
+  mqtt_enabled: true
+  mqtt_host: core-mosquitto
+  mqtt_port: 1883
+  mqtt_username: ''
+  mqtt_password: ''
+  mqtt_topic: tapo_camera_bridge
+  mqtt_discovery_prefix: homeassistant
+  log_level: INFO
+schema:
+  cameras:
+  - id: str
+    name: str
+    host: str
+    username: str
+    password: password
+    enabled: bool
+  request_timeout_seconds: int(2,120)
+  position_poll_seconds: float(0.2,60.0)
+  active_position_poll_seconds: float(0.1,5.0)
+  ptz_safety_timeout_seconds: float(0.5,10.0)
+  mqtt_enabled: bool
+  mqtt_host: str
+  mqtt_port: port
+  mqtt_username: str
+  mqtt_password: password
+  mqtt_topic: str
+  mqtt_discovery_prefix: str
+  log_level: list(DEBUG|INFO|WARNING|ERROR)
