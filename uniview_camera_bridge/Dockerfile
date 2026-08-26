@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir \
       paho-mqtt==2.1.0
 
 WORKDIR /app
-COPY app.py uniview.py ha_mqtt.py alarm_service.py run.sh healthcheck.py ./
+COPY app.py uniview.py onvif_camera.py onvif_adapter.py rectification_gate.py ha_mqtt.py alarm_service.py run.sh healthcheck.py ./
 COPY templates ./templates
 RUN chmod +x /app/run.sh
 
