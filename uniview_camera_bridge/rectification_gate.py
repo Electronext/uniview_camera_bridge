@@ -27,13 +27,14 @@ def _status_with_gate(state: dict[str, Any], *, healthy: bool = True, last_actio
     })
     if last_action is not None:
         status["last_action"] = last_action
-    # Keep checked unchanged while disabled: no image-based position check ran.
+    # Keep checked unchanged while automatic processing is disabled: no
+    # scheduled image-based position check ran.
     app.atomic_write_json(app.STATUS_PATH, status)
     return status
 
 
 class RectificationMQTTDiscovery(BaseMQTTDiscovery):
-    """Add the D2 rectification master switch without changing base MQTT APIs."""
+    """Add the D2 automatic-rectification switch without changing base MQTT APIs."""
 
     def _on_message(self, client: Any, userdata: Any, message: Any) -> None:
         suffix = message.topic.removeprefix(f"{self.base}/command/")
@@ -53,7 +54,7 @@ class RectificationMQTTDiscovery(BaseMQTTDiscovery):
         if d2 is None:
             return
         self._camera_config(d2, "switch", "rectification_enabled", {
-            "name": "Rectification enabled",
+            "name": "Auto-rectification enabled",
             "state_topic": f"{self.base}/state",
             "value_template": "{{ 'ON' if value_json.rectification_enabled else 'OFF' }}",
             "command_topic": f"{self.base}/command/camera/D2/rectify_enabled",
@@ -72,9 +73,10 @@ _original_execute_command = app.execute_command
 
 
 def perform_check(camera: Any, options: dict[str, Any], templates: Any, state: dict[str, Any], ha: Any) -> dict[str, Any]:
+    """Scheduled auto-check entry point, gated by the HA switch."""
     state.setdefault("rectify_enabled", True)
     if not _enabled(state):
-        logging.debug("Rectification disabled: skipping D2 snapshot/image-processing cycle")
+        logging.debug("Auto-rectification disabled: skipping scheduled D2 snapshot/image-processing cycle")
         return _status_with_gate(state, last_action=state.get("last_action", "none"))
 
     status = _original_perform_check(camera, options, templates, state, ha)
@@ -92,17 +94,24 @@ def execute_command(command: dict[str, Any], camera: Any, options: dict[str, Any
     if action == "rectify_enabled":
         enabled = bool(command.get("enabled"))
         _persist_flag(state, enabled)
-        state["last_action"] = "rectification_enabled" if enabled else "rectification_disabled"
+        state["last_action"] = "auto_rectification_enabled" if enabled else "auto_rectification_disabled"
         app.atomic_write_json(app.STATE_PATH, state)
-        logging.info("D2 rectification/image processing -> %s", "enabled" if enabled else "disabled")
+        logging.info("D2 automatic rectification/image processing -> %s", "enabled" if enabled else "disabled")
         return _status_with_gate(state, last_action=state["last_action"])
 
-    if action == "rectify" and not _enabled(state):
-        logging.warning("Manual D2 rectification blocked because Rectification enabled is OFF")
-        state["last_action"] = "rectify_blocked_disabled"
-        app.atomic_write_json(app.STATE_PATH, state)
-        return _status_with_gate(state, last_action=state["last_action"])
+    if action == "run_check" and not _enabled(state):
+        # The switch controls only the automatic cycle. A user-requested manual
+        # position check must still analyse the image and may invoke recovery
+        # according to the normal manual command path.
+        logging.info("Manual D2 position check requested while auto-rectification is disabled")
+        result = _original_perform_check(camera, options, templates, state, ha)
+        result["heartbeat"] = app.now().isoformat()
+        result["rectification_enabled"] = False
+        app.atomic_write_json(app.STATUS_PATH, result)
+        return result
 
+    # Manual Rectify, presets and other manual commands remain available even
+    # when automatic rectification is disabled.
     result = _original_execute_command(command, camera, options, templates, state, ha)
     if result is not None:
         result["heartbeat"] = app.now().isoformat()
