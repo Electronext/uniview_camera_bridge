@@ -7,8 +7,6 @@ import app
 from ha_mqtt import MQTTDiscovery as BaseMQTTDiscovery
 from onvif_adapter import patch_uniview_camera
 
-VERSION = "1.7.0-beta2"
-
 
 def _enabled(state: dict[str, Any]) -> bool:
     return bool(state.get("rectify_enabled", True))
@@ -36,10 +34,6 @@ def _status_with_gate(state: dict[str, Any], *, healthy: bool = True, last_actio
 
 class RectificationMQTTDiscovery(BaseMQTTDiscovery):
     """Add the D2 rectification master switch without changing base MQTT APIs."""
-
-    def __init__(self, options: dict[str, Any], commands: Any):
-        options["addon_version"] = VERSION
-        super().__init__(options, commands)
 
     def _on_message(self, client: Any, userdata: Any, message: Any) -> None:
         suffix = message.topic.removeprefix(f"{self.base}/command/")
