@@ -22,6 +22,7 @@ class FakeONVIF:
     def set_zoom(self,t,p=None): self.calls.append(("set",t,p))
     def continuous_move(self,**kw): self.calls.append(("move",kw))
     def stop_move(self,**kw): self.calls.append(("stop",kw))
+    def fork(self): child=FakeONVIF(); child.parent=self; return child
 
 
 class AdapterTests(unittest.TestCase):
@@ -39,5 +40,8 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(c.onvif.calls[-1],("stop",{"profile":None,"pan_tilt":True,"zoom":True}))
             c.stop_move()
             self.assertEqual(c.onvif.calls[-1],("stop",{"profile":None,"pan_tilt":True,"zoom":True}))
+            safety=c.fork_ptz_safety_client()
+            self.assertIsInstance(safety,FakeONVIF)
+            self.assertIsNot(safety,c.onvif)
 
 if __name__ == "__main__": unittest.main()
