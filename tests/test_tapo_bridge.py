@@ -87,6 +87,63 @@ class Tests(unittest.TestCase):
             c.target_blocks['absolute_move'].set(); worker.join(1); b.stop_watchdog()
         self.assertFalse(r.moving); self.assertIsNone(r.stop_deadline)
 
+    def test_failed_late_continuous_move_is_stopped_again(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
+        c.move_block=threading.Event(); c.move_failures=1; b.start_watchdog()
+        error=[]
+        def move():
+            try:b.execute(r,'ptz',{'pan':.4,'tilt':0})
+            except Exception as e:error.append(e)
+        worker=threading.Thread(target=move,daemon=True); worker.start()
+        try:
+            self.assertTrue(c.stop_seen.wait(.5),'initial watchdog Stop missing')
+            c.move_block.set(); worker.join(1)
+            self.assertTrue(error); self.assertTrue(r.moving)
+            c.stop_seen.clear()
+            self.assertTrue(c.stop_seen.wait(.5),'ambiguous failed late ContinuousMove was not stopped again')
+        finally:
+            c.move_block.set(); b.stop_watchdog()
+        self.assertFalse(r.moving)
+
+    def test_continuous_outcome_during_inflight_stop_requires_followup(self):
+        r,c=self.runtime(); safety=FakeClient(); r.safety_client=safety
+        b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
+        c.move_block=threading.Event(); safety.stop_block=threading.Event(); b.start_watchdog()
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.4,'tilt':0}),daemon=True); worker.start()
+        try:
+            self.assertTrue(safety.stop_seen.wait(.5),'first safety Stop did not start')
+            c.move_block.set(); worker.join(1)
+            self.assertFalse(worker.is_alive())
+            with r.stop_condition:self.assertEqual(r.stop_again_generation,r.movement_generation)
+            safety.stop_seen.clear(); safety.stop_block.set()
+            self.assertTrue(safety.stop_seen.wait(.5),'follow-up Stop after in-flight overlap missing')
+        finally:
+            c.move_block.set(); safety.stop_block.set(); b.stop_watchdog()
+        names=[name for name,_ in safety.calls]
+        self.assertGreaterEqual(names.count('stop_move'),2)
+        self.assertFalse(r.moving)
+
+    def test_failed_continuous_outcome_during_inflight_stop_requires_followup(self):
+        r,c=self.runtime(); safety=FakeClient(); r.safety_client=safety
+        b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
+        c.move_block=threading.Event(); c.move_failures=1; safety.stop_block=threading.Event(); b.start_watchdog()
+        error=[]
+        def move():
+            try:b.execute(r,'ptz',{'pan':.4,'tilt':0})
+            except Exception as e:error.append(e)
+        worker=threading.Thread(target=move,daemon=True); worker.start()
+        try:
+            self.assertTrue(safety.stop_seen.wait(.5))
+            c.move_block.set(); worker.join(1)
+            self.assertTrue(error)
+            with r.stop_condition:self.assertEqual(r.stop_again_generation,r.movement_generation)
+            safety.stop_seen.clear(); safety.stop_block.set()
+            self.assertTrue(safety.stop_seen.wait(.5),'failed late move did not cause post-flight Stop')
+        finally:
+            c.move_block.set(); safety.stop_block.set(); b.stop_watchdog()
+        self.assertGreaterEqual(sum(1 for name,_ in safety.calls if name=='stop_move'),2)
+        self.assertFalse(r.moving)
+
     def test_blocked_stop_for_one_camera_does_not_starve_another(self):
         r1,c1=self.runtime(); r1.camera_id='cam1'; r1.name='Camera 1'
         r2,c2=self.runtime(); r2.camera_id='cam2'; r2.name='Camera 2'
