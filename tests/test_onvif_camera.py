@@ -24,6 +24,12 @@ OK='<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body/></s:E
 
 class Tests(unittest.TestCase):
     def cam(self,rs): s=S(rs); return ONVIFCamera('192.168.90.113:2020','viewer','secret',session=s,action_in_content_type=False),s
+    def test_wsse_username_is_xml_escaped(self):
+        s=S([]); c=ONVIFCamera('192.168.90.113:2020','viewer&<admin>','secret',session=s,action_in_content_type=False)
+        header=c._wsse()
+        self.assertIn('<wsse:Username>viewer&amp;&lt;admin&gt;</wsse:Username>',header)
+        self.assertNotIn('viewer&<admin>',header)
+
     def test_shared_service_endpoint(self):
         c,s=self.cam([R(SERVICES)]); x=c.get_services(); self.assertEqual(x[MEDIA_NS],'http://192.168.90.113:2020/onvif/service'); self.assertEqual(x[PTZ_NS],x[MEDIA_NS])
     def test_c220_status_and_spaces(self):
