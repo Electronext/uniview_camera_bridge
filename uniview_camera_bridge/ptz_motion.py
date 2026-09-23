@@ -98,10 +98,10 @@ class UniviewPTZMotionManager:
         with state.lock:
             state.generation += 1
             generation = state.generation
-            state.moving = False
-            state.deadline = None
-            state.stop_required = False
-            state.stop_retry_due = None
+            # The target supersedes continuous motion, but keep the old
+            # watchdog armed until the worker has issued the target's
+            # pre-Stop. This avoids an unbounded interval if a claimed
+            # ContinuousMove is still blocked.
             state.pending.append((generation, "target", (send, done)))
             self._ensure_worker_locked(state)
         return done
@@ -125,6 +125,16 @@ class UniviewPTZMotionManager:
                     continue
             if kind == "target":
                 send, done = payload
+                # Establish a hard Stop barrier before an absolute/preset
+                # target. This guarantees stale continuous velocity cannot
+                # survive into target travel, even when the preceding request
+                # completed normally before the target was dequeued.
+                self._send_followup_stop(state)
+                with state.lock:
+                    state.moving = False
+                    state.deadline = None
+                    state.stop_required = False
+                    state.stop_retry_due = None
                 try:
                     send()
                 except Exception:
