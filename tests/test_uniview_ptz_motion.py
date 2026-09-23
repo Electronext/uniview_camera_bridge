@@ -22,9 +22,10 @@ class FakePrimary:
 
 class FakeSafety:
     def __init__(self):
-        self.calls=[]; self.failures=0; self.seen=threading.Event()
+        self.calls=[]; self.failures=0; self.block=None; self.seen=threading.Event()
     def stop_move(self,**kw):
         self.calls.append(('stop',kw)); self.seen.set()
+        if self.block:self.block.wait(2)
         if self.failures:
             self.failures-=1
             raise RuntimeError('stop failed')
@@ -70,6 +71,21 @@ class MotionTests(unittest.TestCase):
             self.assertEqual(primary.calls[1][1]['pan'],-.3)
         finally:
             primary.block.set(); manager.shutdown()
+
+    def test_new_move_cannot_overtake_inflight_stop(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        try:
+            manager.submit_move(2,.4,0,0); self.assertTrue(primary.seen.wait(.3))
+            safety.block=threading.Event()
+            stopper=threading.Thread(target=lambda:manager.stop(2),daemon=True); stopper.start()
+            self.assertTrue(safety.seen.wait(.3))
+            primary.seen.clear(); manager.submit_move(2,-.4,0,0)
+            self.assertFalse(primary.seen.wait(.05),'new move overtook in-flight Stop')
+            safety.block.set(); stopper.join(1)
+            self.assertTrue(primary.seen.wait(.3),'new move did not resume after Stop completed')
+        finally:
+            if safety.block:safety.block.set()
+            manager.shutdown()
 
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
