@@ -43,7 +43,21 @@ def patch_uniview_camera(uniview_class) -> None:
         return self.onvif.set_zoom(target, profile)
 
     def continuous_move(self, pan=0.0, tilt=0.0, zoom=0.0, profile=None):
-        return self.onvif.continuous_move(pan=pan, tilt=tilt, zoom=zoom, profile=profile)
+        # Legacy Uniview contract: zero components were omitted, and an
+        # all-zero request meant Stop. Translate that contract explicitly at
+        # this compatibility boundary; do not leak the shared client's newer
+        # None=omitted / 0=explicit-zero semantics into existing callers.
+        pan=float(pan); tilt=float(tilt); zoom=float(zoom)
+        pt_active=abs(pan)>=1e-6 or abs(tilt)>=1e-6
+        zoom_active=abs(zoom)>=1e-6
+        if not pt_active and not zoom_active:
+            return self.onvif.stop_move(profile=profile, pan_tilt=True, zoom=True)
+        return self.onvif.continuous_move(
+            pan=pan if pt_active else None,
+            tilt=tilt if pt_active else None,
+            zoom=zoom if zoom_active else None,
+            profile=profile,
+        )
 
     def stop_move(self, profile=None):
         # Preserve the established Uniview bridge wire semantics: both axes are
