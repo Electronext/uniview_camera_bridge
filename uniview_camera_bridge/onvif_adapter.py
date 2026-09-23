@@ -64,6 +64,14 @@ def patch_uniview_camera(uniview_class) -> None:
         # included in Stop even on cameras that only implement one of them.
         return self.onvif.stop_move(profile=profile, pan_tilt=True, zoom=True)
 
+    def fork_ptz_safety_client(self):
+        """Independent ONVIF session for Stop traffic.
+
+        A blocked ContinuousMove on the primary requests.Session must never
+        prevent a release/watchdog Stop from reaching the camera.
+        """
+        return self.onvif.fork()
+
     uniview_class.__init__ = __init__
     uniview_class.get_ptz_configuration_options = get_ptz_configuration_options
     uniview_class.get_ptz_node_capabilities = get_ptz_node_capabilities
@@ -71,4 +79,5 @@ def patch_uniview_camera(uniview_class) -> None:
     uniview_class.set_zoom = set_zoom
     uniview_class.continuous_move = continuous_move
     uniview_class.stop_move = stop_move
+    uniview_class.fork_ptz_safety_client = fork_ptz_safety_client
     uniview_class._shared_onvif_patched = True
