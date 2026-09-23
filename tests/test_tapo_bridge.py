@@ -10,7 +10,7 @@ ROOT=Path(__file__).resolve().parents[1]/'tapo_camera_bridge'; sys.path.insert(0
 spec=importlib.util.spec_from_file_location('tapo_app',ROOT/'app.py'); app=importlib.util.module_from_spec(spec); sys.modules['tapo_app']=app; spec.loader.exec_module(app)
 
 class FakeClient:
-    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_seen=threading.Event()
+    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_block=None; self.stop_seen=threading.Event()
     def continuous_move(self,**kw):
         self.calls.append(('continuous_move',kw))
         if self.move_failures:
@@ -18,6 +18,7 @@ class FakeClient:
         if self.move_block:self.move_block.wait(2)
     def stop_move(self,**kw):
         self.calls.append(('stop_move',kw)); self.stop_seen.set()
+        if self.stop_block:self.stop_block.wait(2)
         if self.stop_failures:
             self.stop_failures-=1; raise RuntimeError('temporary stop failure')
     def absolute_move(self,**kw):self.calls.append(('absolute_move',kw))
@@ -50,14 +51,35 @@ class Tests(unittest.TestCase):
             c.move_block.set(); worker.join(1); b.stop_watchdog()
         self.assertFalse(r.moving); self.assertIsNone(r.stop_deadline)
 
-    def test_newer_movement_generation_is_not_cleared_by_older_stop(self):
-        r,c=self.runtime(); b=app.Bridge({}); b.cameras[r.camera_id]=r; first=b.arm_movement(r)
-        with r.state_lock:r.stop_in_progress=True
-        b.arm_movement(r)
-        with r.state_lock:
-            if r.movement_generation==first:r.moving=False; r.stop_deadline=None
-            r.stop_in_progress=False
-        self.assertTrue(r.moving); self.assertGreater(r.movement_generation,first)
+    def test_blocked_stop_for_one_camera_does_not_starve_another(self):
+        r1,c1=self.runtime(); r1.camera_id='cam1'; r1.name='Camera 1'
+        r2,c2=self.runtime(); r2.camera_id='cam2'; r2.name='Camera 2'
+        b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras={'cam1':r1,'cam2':r2}
+        c1.stop_block=threading.Event(); b.arm_movement(r1); b.arm_movement(r2)
+        with r1.stop_condition:r1.stop_deadline=time.monotonic()-.01
+        with r2.stop_condition:r2.stop_deadline=time.monotonic()-.01
+        b.start_watchdog()
+        try:
+            self.assertTrue(c1.stop_seen.wait(.4),'camera 1 Stop did not start')
+            self.assertTrue(c2.stop_seen.wait(.4),'camera 2 Stop was starved by camera 1')
+        finally:
+            c1.stop_block.set(); b.stop_watchdog()
+        self.assertFalse(r2.moving)
+
+    def test_new_movement_waits_for_inflight_safety_stop(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
+        c.stop_block=threading.Event(); b.arm_movement(r)
+        with r.stop_condition:r.stop_deadline=time.monotonic()-.01
+        b.start_watchdog()
+        self.assertTrue(c.stop_seen.wait(.4),'safety Stop did not start')
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.7,'tilt':0}),daemon=True); worker.start()
+        time.sleep(.08)
+        self.assertFalse(any(name=='continuous_move' for name,_ in c.calls),'new movement overtook in-flight Stop')
+        c.stop_block.set(); worker.join(1); b.stop_watchdog()
+        self.assertFalse(worker.is_alive())
+        names=[name for name,_ in c.calls]
+        self.assertEqual(names[:2],['stop_move','continuous_move'])
+        self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
 
     def test_absolute_and_relative(self):
         r,c=self.runtime(); b=app.Bridge({}); b.execute(r,'absolute',{'pan':.2,'tilt':.58,'speed':.2}); b.execute(r,'relative',{'pan':.05,'tilt':0,'speed':.2}); self.assertEqual([x[0] for x in c.calls],['absolute_move','relative_move'])
