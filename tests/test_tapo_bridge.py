@@ -237,6 +237,52 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):b.execute(r,'ptz',{'pan':.3,'zoom':0})
         self.assertTrue(r.moving_pt); self.assertTrue(r.moving_zoom); self.assertTrue(r.moving)
 
+    def test_separate_pan_patch_preserves_previous_tilt(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'tilt':.4})
+        b.execute(r,'ptz',{'pan':.3})
+        self.assertEqual(c.calls[0],('continuous_move',{'pan':0.0,'tilt':.4,'zoom':None}))
+        self.assertEqual(c.calls[1],('continuous_move',{'pan':.3,'tilt':.4,'zoom':None}))
+        self.assertEqual((r.commanded_pan,r.commanded_tilt),(.3,.4))
+
+    def test_explicit_single_pt_zero_preserves_other_component(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'pan':.3,'tilt':.4})
+        b.execute(r,'ptz',{'pan':0})
+        self.assertEqual(c.calls[-1],('continuous_move',{'pan':0.0,'tilt':.4,'zoom':None}))
+        self.assertTrue(r.moving_pt); self.assertEqual((r.commanded_pan,r.commanded_tilt),(0.0,.4))
+
+    def test_unsupported_zero_zoom_is_omitted_from_pt_request(self):
+        r,c=self.runtime(); b=app.Bridge({})
+        b.execute(r,'ptz',{'pan':.4,'tilt':0,'zoom':0})
+        self.assertEqual(c.calls[-1],('continuous_move',{'pan':.4,'tilt':0.0,'zoom':None}))
+        self.assertFalse(r.moving_zoom)
+
+    def test_unsupported_zero_pt_is_omitted_from_zoom_request(self):
+        r,c=self.runtime(); r.caps.update({'pan_tilt_continuous':False,'zoom_continuous':True})
+        b=app.Bridge({})
+        b.execute(r,'ptz',{'pan':0,'tilt':0,'zoom':.4})
+        self.assertEqual(c.calls[-1],('continuous_move',{'pan':None,'tilt':None,'zoom':.4}))
+        self.assertFalse(r.moving_pt); self.assertTrue(r.moving_zoom)
+
+    def test_only_unsupported_zero_axes_is_noop_not_stop(self):
+        r,c=self.runtime(); r.caps.update({'pan_tilt_continuous':False,'zoom_continuous':False})
+        b=app.Bridge({})
+        b.execute(r,'ptz',{'pan':0,'tilt':0,'zoom':0})
+        self.assertEqual(c.calls,[])
+
+    def test_ordinary_success_keeps_request_start_deadline(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        c.move_block=threading.Event()
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.4}),daemon=True); worker.start()
+        for _ in range(50):
+            with r.stop_condition: deadline=r.stop_deadline_pt
+            if deadline is not None:break
+            time.sleep(.005)
+        self.assertIsNotNone(deadline)
+        time.sleep(.05); c.move_block.set(); worker.join(1)
+        self.assertEqual(r.stop_deadline_pt,deadline)
+
     def test_axis_specific_watchdog_stop(self):
         for payload,expected in [
             ({'pan':.3},{'pan_tilt':True,'zoom':False}),
