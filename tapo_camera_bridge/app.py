@@ -355,12 +355,14 @@ class Bridge:
             pan=float(d['pan']); tilt=float(d['tilt'])
             zoom=float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None
             speed=float(d['speed']) if 'speed' in d else None
+            if not all(math.isfinite(v) for v in (pan,tilt) + (() if zoom is None else (zoom,)) + (() if speed is None else (speed,))):raise ValueError('absolute PTZ targets must be finite')
             self.target_movement(r,lambda:r.client.absolute_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed),affects_pt=True,affects_zoom=zoom is not None)
         elif action=='relative':
             if not r.caps.get('pan_tilt_relative'):raise RuntimeError('relative pan/tilt unsupported')
             pan=float(d.get('pan',0)); tilt=float(d.get('tilt',0))
             zoom=float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_relative') else None
             speed=float(d['speed']) if 'speed' in d else None
+            if not all(math.isfinite(v) for v in (pan,tilt) + (() if zoom is None else (zoom,)) + (() if speed is None else (speed,))):raise ValueError('relative PTZ targets must be finite')
             self.target_movement(r,lambda:r.client.relative_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed),affects_pt=True,affects_zoom=zoom is not None)
         elif action=='preset':
             token=str(d['token'])
