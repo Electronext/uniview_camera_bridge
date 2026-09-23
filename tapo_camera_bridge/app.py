@@ -87,7 +87,11 @@ class Bridge:
             if want_z and not r.caps.get('zoom_continuous'):raise RuntimeError('continuous zoom unsupported')
             if not want_pt and not want_z:
                 r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False)); r.moving=False; r.stop_deadline=None; return
-            r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom); r.moving=True; r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
+            # Arm the safety stop before sending ContinuousMove. If the camera
+            # accepts the command but its HTTP response is lost, the request
+            # raises ambiguously and we must still consider it potentially moving.
+            r.moving=True; r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
+            r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
             r.client.absolute_move(pan=float(d['pan']),tilt=float(d['tilt']),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None),speed=(float(d['speed']) if 'speed' in d else None))
