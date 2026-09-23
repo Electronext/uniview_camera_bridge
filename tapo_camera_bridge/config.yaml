@@ -23,6 +23,7 @@ options:
   active_position_poll_seconds: 0.2
   ptz_safety_timeout_seconds: 3.0
   ptz_stop_retry_seconds: 0.5
+  shutdown_stop_wait_seconds: 0.5
   mqtt_enabled: true
   mqtt_host: core-mosquitto
   mqtt_port: 1883
@@ -44,6 +45,7 @@ schema:
   active_position_poll_seconds: float(0.1,5.0)
   ptz_safety_timeout_seconds: float(0.5,10.0)
   ptz_stop_retry_seconds: float(0.1,5.0)
+  shutdown_stop_wait_seconds: float(0.1,5.0)
   mqtt_enabled: bool
   mqtt_host: str
   mqtt_port: port
