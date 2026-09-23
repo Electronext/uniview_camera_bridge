@@ -21,7 +21,7 @@ class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
     safety_client:ONVIFCamera|None=None
     moving:bool=False; stop_deadline:float|None=None; next_poll:float=0; last:PTZPosition|None=None
-    movement_generation:int=0; stop_in_progress:bool=False; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
+    movement_generation:int=0; stop_in_progress:bool=False; stop_again_generation:int|None=None; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
     stop_condition:threading.Condition=field(init=False,repr=False)
     def __post_init__(self):
         self.stop_condition=threading.Condition(self.state_lock)
@@ -94,6 +94,7 @@ class Bridge:
                 r.stop_condition.wait(.1)
             r.movement_generation+=1
             generation=r.movement_generation
+            r.stop_again_generation=None
             was_moving=r.moving
             if was_moving:
                 remaining=max(0.0,(r.stop_deadline or time.monotonic())-time.monotonic())
@@ -123,6 +124,7 @@ class Bridge:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
             r.movement_generation+=1
+            r.stop_again_generation=None
             r.moving=True
             r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
             return r.movement_generation
@@ -138,7 +140,11 @@ class Bridge:
         except Exception as e:
             retry=max(.1,float(self.o.get('ptz_stop_retry_seconds',.5)))
             with r.stop_condition:
-                if r.movement_generation==generation and r.moving:r.stop_deadline=time.monotonic()+retry
+                # A failed/ambiguous Stop never proves the camera stationary.
+                # If a ContinuousMove outcome overlapped it, keep the same
+                # generation armed; otherwise retain ordinary retry behavior.
+                if r.movement_generation==generation and r.moving:
+                    r.stop_deadline=time.monotonic()+retry
                 r.stop_in_progress=False
                 r.stop_condition.notify_all()
             logging.exception('%s PTZ safety stop failed; retrying in %.1f s',r.name,retry)
@@ -146,8 +152,17 @@ class Bridge:
             return False
         else:
             with r.stop_condition:
+                # A ContinuousMove may have completed (or failed ambiguously)
+                # while this Stop was in flight. In that case this Stop could
+                # have reached the camera first, so it cannot close the
+                # generation: require one more Stop after the late outcome.
+                stop_again=(r.stop_again_generation==generation)
+                if stop_again:r.stop_again_generation=None
                 if r.movement_generation==generation:
-                    r.moving=False; r.stop_deadline=None
+                    if stop_again:
+                        r.moving=True; r.stop_deadline=time.monotonic()
+                    else:
+                        r.moving=False; r.stop_deadline=None
                 r.stop_in_progress=False
                 r.stop_condition.notify_all()
             return True
@@ -227,14 +242,20 @@ class Bridge:
             # accepts the command but its HTTP response is lost, the request
             # raises ambiguously and we must still consider it potentially moving.
             generation=self.arm_movement(r)
-            r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
-            # If the safety Stop completed while ContinuousMove was blocked,
-            # this request may have reached the camera after that Stop. Re-arm
-            # an immediate Stop rather than trusting the now-stale completion.
-            with r.stop_condition:
-                if r.movement_generation==generation and not r.moving and not r.stop_in_progress:
-                    r.moving=True
-                    r.stop_deadline=time.monotonic()
+            try:
+                r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
+            finally:
+                # Success and transport failure are both ambiguous with respect
+                # to camera-side ordering. If a Stop is still in flight, mark
+                # this generation for a mandatory post-flight Stop. If that
+                # Stop already completed, immediately arm the follow-up here.
+                with r.stop_condition:
+                    if r.movement_generation==generation:
+                        if r.stop_in_progress:
+                            r.stop_again_generation=generation
+                        elif not r.moving:
+                            r.moving=True
+                            r.stop_deadline=time.monotonic()
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
             pan=float(d['pan']); tilt=float(d['tilt'])
