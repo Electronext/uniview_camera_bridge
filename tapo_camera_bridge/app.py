@@ -87,11 +87,6 @@ class Bridge:
         r.moving=bool(r.moving_pt or r.moving_zoom)
         r.stop_deadline=min((d for d in (r.stop_deadline_pt if r.moving_pt else None,r.stop_deadline_zoom if r.moving_zoom else None) if d is not None),default=None)
 
-    def set_axis_deadline(self,r,pt=None,zoom=None):
-        if pt is not None and r.moving_pt:r.stop_deadline_pt=pt
-        if zoom is not None and r.moving_zoom:r.stop_deadline_zoom=zoom
-        self.sync_moving(r)
-
     def target_movement(self,r,send,affects_pt=True,affects_zoom=False):
         # Target moves supersede only axes actually present in their request.
         with r.stop_condition:
