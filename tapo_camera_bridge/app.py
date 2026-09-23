@@ -117,12 +117,29 @@ class Bridge:
                 t=time.monotonic()
                 for r in self.cameras.values():
                     if r.stop_deadline and t>=r.stop_deadline:
-                        try:r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
-                        finally:r.moving=False; r.stop_deadline=None
+                        try:
+                            r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+                        except Exception as e:
+                            retry=max(.1,float(self.o.get('ptz_stop_retry_seconds',.5)))
+                            r.stop_deadline=time.monotonic()+retry
+                            logging.exception('%s PTZ safety stop failed; retrying in %.1f s',r.name,retry)
+                            self.publish_state(r,False,str(e))
+                        else:
+                            r.moving=False; r.stop_deadline=None
                     if t>=r.next_poll:
                         try:r.last=r.client.get_status(); self.publish_state(r); r.next_poll=t+(active if r.moving else idle)
                         except Exception as e:logging.debug('%s status poll failed: %s',r.name,e); self.publish_state(r,False,str(e)); r.next_poll=t+idle
         finally:
+            # ContinuousMove has no camera-side timeout, so do not rely on the
+            # normal safety deadline during add-on shutdown/restart.
+            for r in self.cameras.values():
+                if r.moving:
+                    try:
+                        r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+                    except Exception:
+                        logging.exception('%s PTZ stop failed during bridge shutdown',r.name)
+                    else:
+                        r.moving=False; r.stop_deadline=None
             if self.mqtt:self.pub(f'{self.base}/availability','offline',True); self.mqtt.disconnect(); self.mqtt.loop_stop()
 
 def main():
