@@ -203,6 +203,53 @@ class Tests(unittest.TestCase):
         worker.join(1)
         self.assertFalse(worker.is_alive()); self.assertEqual(c.calls[-1][0],'absolute_move')
 
+    def test_pt_target_preserves_continuous_zoom_safety(self):
+        r,c=self.runtime(); r.caps.update({'zoom_absolute':True,'zoom_relative':True,'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'zoom':.5})
+        self.assertFalse(r.moving_pt); self.assertTrue(r.moving_zoom)
+        deadline=r.stop_deadline
+        b.execute(r,'absolute',{'pan':.2,'tilt':.3})
+        self.assertFalse(r.moving_pt); self.assertTrue(r.moving_zoom); self.assertTrue(r.moving)
+        self.assertEqual(r.stop_deadline,deadline)
+        b.watchdog_once(r,deadline+.01)
+        self.assertEqual(c.calls[-1],('stop_move',{'pan_tilt':False,'zoom':True}))
+
+    def test_target_with_zoom_retires_both_continuous_axes(self):
+        r,c=self.runtime(); r.caps.update({'zoom_absolute':True,'zoom_relative':True,'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'pan':.3,'zoom':.5})
+        b.execute(r,'absolute',{'pan':.2,'tilt':.3,'zoom':.4})
+        self.assertFalse(r.moving_pt); self.assertFalse(r.moving_zoom); self.assertFalse(r.moving)
+        self.assertIsNone(r.stop_deadline)
+
+    def test_successful_zero_zoom_velocity_retires_previous_zoom(self):
+        r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'zoom':.5})
+        b.execute(r,'ptz',{'pan':.3,'zoom':0})
+        self.assertTrue(r.moving_pt); self.assertFalse(r.moving_zoom)
+
+    def test_failed_zero_zoom_velocity_keeps_previous_zoom_armed(self):
+        r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'zoom':.5}); c.move_failures=1
+        with self.assertRaises(RuntimeError):b.execute(r,'ptz',{'pan':.3,'zoom':0})
+        self.assertTrue(r.moving_pt); self.assertTrue(r.moving_zoom); self.assertTrue(r.moving)
+
+    def test_axis_specific_watchdog_stop(self):
+        for payload,expected in [
+            ({'pan':.3},{'pan_tilt':True,'zoom':False}),
+            ({'zoom':.4},{'pan_tilt':False,'zoom':True}),
+            ({'pan':.3,'zoom':.4},{'pan_tilt':True,'zoom':True}),
+        ]:
+            with self.subTest(payload=payload):
+                r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
+                b=app.Bridge({'ptz_safety_timeout_seconds':.05})
+                b.execute(r,'ptz',payload)
+                b.watchdog_once(r,r.stop_deadline+.01)
+                self.assertEqual(c.calls[-1],('stop_move',expected))
+
     def test_target_moves_retire_pending_continuous_deadline(self):
         for action,payload,call_name in [
             ('absolute',{'pan':.2,'tilt':.3},'absolute_move'),
@@ -270,7 +317,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(c.calls[before][0],'stop_move')
 
     def test_clear_movement_invalidates_late_generation(self):
-        r,c=self.runtime(); b=app.Bridge({}); generation=b.arm_movement(r)
+        r,c=self.runtime(); b=app.Bridge({}); generation=b.arm_movement(r)[0]
         b.clear_movement(r)
         self.assertGreater(r.movement_generation,generation); self.assertIsNone(r.stop_again_generation)
         with r.stop_condition:
