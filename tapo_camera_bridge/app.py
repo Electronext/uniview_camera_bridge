@@ -243,7 +243,7 @@ class Bridge:
         else:
             with r.stop_condition:
                 if r.movement_generation==generation:
-                    if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None
+                    if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None; r.commanded_pan=0.0; r.commanded_tilt=0.0
                     if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
                     self.sync_moving(r)
 
