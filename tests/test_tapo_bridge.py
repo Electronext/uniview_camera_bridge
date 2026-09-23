@@ -10,7 +10,7 @@ ROOT=Path(__file__).resolve().parents[1]/'tapo_camera_bridge'; sys.path.insert(0
 spec=importlib.util.spec_from_file_location('tapo_app',ROOT/'app.py'); app=importlib.util.module_from_spec(spec); sys.modules['tapo_app']=app; spec.loader.exec_module(app)
 
 class FakeClient:
-    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_block=None; self.stop_seen=threading.Event()
+    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_block=None; self.stop_seen=threading.Event(); self.target_failures={}
     def continuous_move(self,**kw):
         self.calls.append(('continuous_move',kw))
         if self.move_failures:
@@ -21,9 +21,13 @@ class FakeClient:
         if self.stop_block:self.stop_block.wait(2)
         if self.stop_failures:
             self.stop_failures-=1; raise RuntimeError('temporary stop failure')
-    def absolute_move(self,**kw):self.calls.append(('absolute_move',kw))
-    def relative_move(self,**kw):self.calls.append(('relative_move',kw))
-    def goto_preset(self,v):self.calls.append(('goto_preset',v))
+    def _target(self,name,value):
+        self.calls.append((name,value))
+        if self.target_failures.get(name,0):
+            self.target_failures[name]-=1; raise RuntimeError('ambiguous target failure')
+    def absolute_move(self,**kw):self._target('absolute_move',kw)
+    def relative_move(self,**kw):self._target('relative_move',kw)
+    def goto_preset(self,v):self._target('goto_preset',v)
 
 class Tests(unittest.TestCase):
     def runtime(self):
@@ -109,6 +113,47 @@ class Tests(unittest.TestCase):
                 self.assertEqual(c.calls[-1][0],call_name)
                 before=len(c.calls); b.watchdog_once(r,time.monotonic()+10)
                 self.assertEqual(len(c.calls),before,'stale ContinuousMove watchdog fired after target move')
+
+    def test_invalid_target_payload_does_not_retire_continuous_safety(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'pan':.4,'tilt':0}); generation=r.movement_generation; deadline=r.stop_deadline
+        with self.assertRaises((KeyError,ValueError)):b.execute(r,'absolute',{'tilt':.2})
+        self.assertTrue(r.moving); self.assertEqual(r.movement_generation,generation); self.assertEqual(r.stop_deadline,deadline)
+        self.assertEqual([name for name,_ in c.calls],['continuous_move'])
+
+    def test_failed_target_request_rearms_immediate_safety_stop(self):
+        for action,payload,call_name in [
+            ('absolute',{'pan':.2,'tilt':.3},'absolute_move'),
+            ('relative',{'pan':.1,'tilt':0},'relative_move'),
+            ('preset',{'token':'1'},'goto_preset'),
+        ]:
+            with self.subTest(action=action):
+                r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+                b.execute(r,'ptz',{'pan':.4,'tilt':0}); c.target_failures[call_name]=1
+                with self.assertRaises(RuntimeError):b.execute(r,action,payload)
+                self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
+                before=len(c.calls); b.watchdog_once(r,time.monotonic()+.01)
+                self.assertEqual(len(c.calls),before+1); self.assertEqual(c.calls[-1][0],'stop_move')
+
+    def test_ptz_coalescing_stops_at_target_barrier(self):
+        r,c=self.runtime(); b=app.Bridge({}); b.cameras[r.camera_id]=r
+        first=(r.camera_id,'ptz',{'pan':.1})
+        b.q.put((r.camera_id,'ptz',{'pan':.2}))
+        b.q.put((r.camera_id,'absolute',{'pan':.5,'tilt':.5}))
+        b.q.put((r.camera_id,'ptz',{'pan':.9}))
+        latest=b.coalesce_ptz(first)
+        self.assertEqual(latest[2]['pan'],.2)
+        self.assertEqual(b.pending_command[1],'absolute')
+        barrier=b.pending_command; b.pending_command=None
+        self.assertEqual(barrier[2]['pan'],.5)
+        self.assertEqual(b.q.get_nowait()[2]['pan'],.9)
+
+    def test_ptz_stop_is_a_coalescing_barrier(self):
+        r,c=self.runtime(); b=app.Bridge({}); first=(r.camera_id,'ptz',{'pan':.1})
+        b.q.put((r.camera_id,'ptz',{'pan':.2})); b.q.put((r.camera_id,'ptz',{'stop':True})); b.q.put((r.camera_id,'ptz',{'pan':.8}))
+        latest=b.coalesce_ptz(first)
+        self.assertEqual(latest[2]['pan'],.2); self.assertTrue(b.pending_command[2]['stop'])
+        self.assertEqual(b.q.get_nowait()[2]['pan'],.8)
 
     def test_shutdown_stops_are_dispatched_independently(self):
         r1,c1=self.runtime(); r1.camera_id='cam1'; r1.name='Camera 1'
