@@ -26,11 +26,13 @@ Stop payload:
 
 Pan and tilt use the ONVIF normalized `-1..1` velocity range. Continuous movement is protected by a per-camera safety watchdog. Each camera has an independent watchdog and ONVIF safety session, so a blocked command or Stop request on one camera cannot delay the safety deadline of another camera.
 
-The watchdog is deliberately independent of normal command I/O: if a `ContinuousMove` request is accepted by the camera but its HTTP response stalls or is lost, the watchdog can still issue `Stop` at the configured `ptz_safety_timeout_seconds` deadline. Failed safety Stops are retried after `ptz_stop_retry_seconds`. Any new movement-producing command for the same camera—continuous, absolute, relative, or preset—is serialized behind a safety Stop already in flight, preventing an older Stop from racing and cancelling the newer command.
+The watchdog is deliberately independent of normal command I/O: if a `ContinuousMove` request is accepted by the camera but its HTTP response stalls or is lost, the watchdog can still issue `Stop` at the configured `ptz_safety_timeout_seconds` deadline. Failed safety Stops are retried after `ptz_stop_retry_seconds`. Any new movement-producing command for the same camera—continuous, absolute, relative, or preset—is serialized behind a safety Stop already in flight, preventing an older Stop from racing and cancelling the newer command. Absolute, relative, and preset moves explicitly supersede a pending continuous move: the old continuous-move deadline is retired before the target command is transmitted, so its stale watchdog cannot later interrupt the target move.
 
 The bridge also accepts absolute and relative pan/tilt JSON commands on `/absolute` and `/relative`, and publishes native ONVIF preset buttons when the camera advertises presets.
 
 ## ONVIF transport notes
+
+During add-on shutdown, best-effort Stops for all cameras that may still be moving are dispatched independently before the bridge waits for them. `shutdown_stop_wait_seconds` bounds how long shutdown waits for those requests; a slow or unreachable camera cannot prevent Stop from being sent to the others.
 
 The shared ONVIF client XML-escapes camera/user supplied SOAP text such as usernames, profile/configuration tokens and preset tokens. The Tapo bridge creates a separate ONVIF client/session for safety Stops while reusing the discovered service/profile metadata; this is what allows safety traffic to proceed while the normal command session is blocked.
 
