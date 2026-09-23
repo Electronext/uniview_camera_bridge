@@ -5,7 +5,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass
@@ -16,7 +16,7 @@ class _PTZState:
     generation: int = 0
     moving: bool = False
     deadline: float | None = None
-    pending: tuple[int, float, float, float] | None = None
+    pending: tuple[int, str, Any] | None = None
     worker: threading.Thread | None = None
     stop_required: bool = False
     stop_retry_due: float | None = None
@@ -62,6 +62,11 @@ class UniviewPTZMotionManager:
             raise ValueError("PTZ velocities must be finite")
         return max(-1.0, min(1.0, value))
 
+    def _ensure_worker_locked(self, state: _PTZState) -> None:
+        if state.worker is None or not state.worker.is_alive():
+            state.worker = threading.Thread(target=self._worker_loop, args=(state,), name=f"uniview-ptz-D{state.source_id}", daemon=True)
+            state.worker.start()
+
     def submit_move(self, source_id: int, pan: Any, tilt: Any, zoom: Any) -> None:
         state = self.states[source_id]
         pan, tilt, zoom = self._velocity(pan), self._velocity(tilt), self._velocity(zoom)
@@ -72,10 +77,30 @@ class UniviewPTZMotionManager:
             state.deadline = time.monotonic() + self.safety_timeout
             state.stop_required = False
             state.stop_retry_due = None
-            state.pending = (generation, pan, tilt, zoom)
-            if state.worker is None or not state.worker.is_alive():
-                state.worker = threading.Thread(target=self._worker_loop, args=(state,), name=f"uniview-ptz-D{source_id}", daemon=True)
-                state.worker.start()
+            # Velocity samples are replaceable until the worker claims one.
+            state.pending = (generation, "move", (pan, tilt, zoom))
+            self._ensure_worker_locked(state)
+
+    def submit_target(self, source_id: int, send: Callable[[], Any]) -> threading.Event:
+        """Queue an absolute/preset target behind already-submitted PTZ work.
+
+        The target is a hard per-camera ordering barrier. It invalidates the
+        continuous-movement watchdog state immediately, then executes on the
+        same primary-session worker after any already-claimed ContinuousMove
+        and its required follow-up Stop have completed.
+        """
+        state = self.states[source_id]
+        done = threading.Event()
+        with state.lock:
+            state.generation += 1
+            generation = state.generation
+            state.moving = False
+            state.deadline = None
+            state.stop_required = False
+            state.stop_retry_due = None
+            state.pending = (generation, "target", (send, done))
+            self._ensure_worker_locked(state)
+        return done
 
     def _worker_loop(self, state: _PTZState) -> None:
         while not self._shutdown.is_set():
@@ -85,15 +110,29 @@ class UniviewPTZMotionManager:
                 if item is None:
                     state.worker = None
                     return
-                generation, pan, tilt, zoom = item
-                if generation != state.generation or not state.moving:
+                generation, kind, payload = item
+                if generation != state.generation:
                     continue
-            # Never let a newly queued move overtake an already-started
-            # safety Stop. After the Stop completes, revalidate the generation.
+                if kind == "move" and not state.moving:
+                    continue
+            # Never let newly queued work overtake an already-started safety
+            # Stop. Revalidate after it completes.
             state.stop_done.wait()
             with state.lock:
-                if generation != state.generation or not state.moving:
+                if generation != state.generation:
                     continue
+                if kind == "move" and not state.moving:
+                    continue
+            if kind == "target":
+                send, done = payload
+                try:
+                    send()
+                except Exception:
+                    logging.exception("D%d PTZ target request failed", state.source_id)
+                finally:
+                    done.set()
+                continue
+            pan, tilt, zoom = payload
             try:
                 state.primary.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
             except Exception:
@@ -102,9 +141,9 @@ class UniviewPTZMotionManager:
                 with state.lock:
                     overtaken = generation != state.generation
                 if overtaken:
-                    # A release/watchdog Stop overtook this request. The camera
-                    # may nevertheless have accepted the late request, so Stop
-                    # once more before any newer primary-session move is sent.
+                    # A Stop or target overtook this request. The camera may
+                    # nevertheless have accepted the late request, so Stop once
+                    # more before the per-camera worker can send later work.
                     self._send_followup_stop(state)
 
     def _send_followup_stop(self, state: _PTZState) -> None:
@@ -178,7 +217,12 @@ class UniviewPTZMotionManager:
                 state.stop_retry_due = None
                 claims.append((state, generation))
         for state, generation in claims:
-            self._attempt_stop(state, generation)
+            threading.Thread(
+                target=self._attempt_stop,
+                args=(state, generation),
+                name=f"uniview-ptz-watchdog-D{state.source_id}",
+                daemon=True,
+            ).start()
 
     def _watchdog_loop(self) -> None:
         while not self._shutdown.wait(self.watchdog_interval):
