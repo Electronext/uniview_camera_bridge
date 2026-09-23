@@ -521,6 +521,8 @@ class Tests(unittest.TestCase):
         self.assertEqual((r.commanded_pan,r.commanded_tilt),(.3,.2))
         self.assertTrue(r.moving_pt)
         safety.stop_block.set(); stopper.join(1)
+        self.assertFalse(r.moving_zoom)
+        self.assertTrue(r.moving_pt)
 
     def test_target_replays_after_overtaking_watchdog_stop(self):
         r,c=self.runtime(); safety=FakeClient(); r.safety_client=safety
