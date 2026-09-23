@@ -130,7 +130,7 @@ class Bridge:
             if touch_zoom:
                 r.moving_zoom=bool(want_zoom or old_zoom); r.stop_deadline_zoom=now_m+timeout
             self.sync_moving(r)
-            return r.movement_generation,old_pt,old_zoom,pan,tilt,want_pt
+            return r.movement_generation,old_pt,old_zoom,pan,tilt,want_pt,r.stop_deadline_pt,r.stop_deadline_zoom
     def clear_movement(self,r):
         with r.stop_condition:
             r.movement_generation+=1
@@ -299,13 +299,11 @@ class Bridge:
             # Wait for any in-flight Stop, resolve the partial PT vector, and
             # arm one generation atomically. This prevents a pre-Stop cached
             # counterpart from being resurrected after the Stop completes.
-            generation,old_pt,old_zoom,pan,tilt,want_pt=self.arm_movement(
+            generation,old_pt,old_zoom,pan,tilt,want_pt,armed_deadline_pt,armed_deadline_zoom=self.arm_movement(
                 r,want_zoom=want_z,touch_pt=touch_pt,touch_zoom=touch_zoom,
                 pan_patch=raw_pan if touch_pt and 'pan' in d else None,
                 tilt_patch=raw_tilt if touch_pt and 'tilt' in d else None,
             )
-            with r.stop_condition:
-                armed_deadline_pt=r.stop_deadline_pt; armed_deadline_zoom=r.stop_deadline_zoom
             succeeded=False
             try:
                 r.client.continuous_move(pan=pan if touch_pt else None,tilt=tilt if touch_pt else None,zoom=zoom if touch_zoom else None)
