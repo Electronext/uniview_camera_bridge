@@ -20,7 +20,7 @@ def slug(v):return '_'.join(''.join(c.lower() if c.isalnum() else '_' for c in v
 class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
     safety_client:ONVIFCamera|None=None
-    moving:bool=False; stop_deadline:float|None=None; next_poll:float=0; last:PTZPosition|None=None
+    moving:bool=False; moving_pt:bool=False; moving_zoom:bool=False; stop_deadline:float|None=None; next_poll:float=0; last:PTZPosition|None=None
     movement_generation:int=0; stop_in_progress:bool=False; stop_again_generation:int|None=None; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
     stop_condition:threading.Condition=field(init=False,repr=False)
     def __post_init__(self):
@@ -83,41 +83,40 @@ class Bridge:
         if user:c.username_pw_set(user,str(self.o.get('mqtt_password','')))
         c.will_set(f'{self.base}/availability','offline',retain=True); c.on_connect=self.on_connect; c.on_message=self.on_message; self.mqtt=c
         c.connect_async(str(self.o.get('mqtt_host','core-mosquitto')),int(self.o.get('mqtt_port',1883)),60); c.loop_start()
-    def target_movement(self,r,send):
-        # The replacement payload must already be validated. If ContinuousMove
-        # may still be active, keep safety armed while the synchronous target
-        # request is in flight. A watchdog Stop may therefore overtake a stalled
-        # target request; generation reconciliation below then prevents stale
-        # state from reviving that old motion.
+    def sync_moving(self,r):
+        r.moving=bool(r.moving_pt or r.moving_zoom)
+
+    def target_movement(self,r,send,affects_pt=True,affects_zoom=False):
+        # Target moves only supersede the axes they actually command. Any
+        # omitted continuous axis remains safety-armed.
         with r.stop_condition:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
             r.movement_generation+=1
             generation=r.movement_generation
             r.stop_again_generation=None
-            was_moving=r.moving
-            if was_moving:
+            old_pt=r.moving_pt; old_zoom=r.moving_zoom
+            affected_active=(affects_pt and old_pt) or (affects_zoom and old_zoom)
+            if affected_active:
                 remaining=max(0.0,(r.stop_deadline or time.monotonic())-time.monotonic())
                 r.stop_deadline=time.monotonic()+min(remaining,float(self.o.get('ptz_transition_safety_seconds',.5)))
-            else:
-                r.moving=False
-                r.stop_deadline=None
+            self.sync_moving(r)
         try:
             send()
         except Exception:
-            if was_moving:
-                with r.stop_condition:
-                    if r.movement_generation==generation and not r.stop_in_progress:
-                        r.moving=True
-                        r.stop_deadline=time.monotonic()
+            with r.stop_condition:
+                if r.movement_generation==generation and affected_active and not r.stop_in_progress:
+                    r.stop_deadline=time.monotonic()
             raise
         else:
             with r.stop_condition:
                 if r.movement_generation==generation:
-                    r.moving=False
-                    r.stop_deadline=None
+                    if affects_pt:r.moving_pt=False
+                    if affects_zoom:r.moving_zoom=False
+                    self.sync_moving(r)
+                    if not r.moving:r.stop_deadline=None
 
-    def arm_movement(self,r):
+    def arm_movement(self,r,want_pt=True,want_zoom=False):
         # Serialize ContinuousMove behind any Stop already in flight. Keeping
         # the check and arming under the same lock makes that ordering atomic.
         with r.stop_condition:
@@ -125,23 +124,25 @@ class Bridge:
                 r.stop_condition.wait(.1)
             r.movement_generation+=1
             r.stop_again_generation=None
-            r.moving=True
+            r.moving_pt=bool(want_pt)
+            r.moving_zoom=bool(want_zoom)
+            self.sync_moving(r)
             r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
             return r.movement_generation
     def clear_movement(self,r):
         with r.stop_condition:
             r.movement_generation+=1
             r.stop_again_generation=None
-            r.moving=False; r.stop_deadline=None
+            r.moving_pt=False; r.moving_zoom=False; self.sync_moving(r); r.stop_deadline=None
     def safety_stop_once(self,r,expected_generation=None,expected_deadline=None):
         with r.stop_condition:
             if not r.moving or r.stop_in_progress:return False
             if expected_generation is not None and r.movement_generation!=expected_generation:return False
             if expected_deadline is not None and r.stop_deadline!=expected_deadline:return False
             if expected_deadline is not None and time.monotonic()<expected_deadline:return False
-            r.stop_in_progress=True; generation=r.movement_generation
+            r.stop_in_progress=True; generation=r.movement_generation; stop_pt=r.moving_pt; stop_zoom=r.moving_zoom
         try:
-            (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+            (r.safety_client or r.client).stop_move(pan_tilt=stop_pt,zoom=stop_zoom)
         except Exception as e:
             retry=max(.1,float(self.o.get('ptz_stop_retry_seconds',.5)))
             with r.stop_condition:
@@ -167,7 +168,10 @@ class Bridge:
                     if stop_again:
                         r.moving=True; r.stop_deadline=time.monotonic()
                     else:
-                        r.moving=False; r.stop_deadline=None
+                        if stop_pt:r.moving_pt=False
+                        if stop_zoom:r.moving_zoom=False
+                        self.sync_moving(r)
+                        if not r.moving:r.stop_deadline=None
                 r.stop_in_progress=False
                 r.stop_condition.notify_all()
             return True
@@ -197,17 +201,22 @@ class Bridge:
         with r.stop_condition:
             moving=r.moving
             generation=r.movement_generation
+            stop_pt=r.moving_pt; stop_zoom=r.moving_zoom
         if not moving:return
         try:
             # Shutdown is best-effort and generation-aware: never let its late
             # completion clear a newer movement generation.
-            (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+            (r.safety_client or r.client).stop_move(pan_tilt=stop_pt,zoom=stop_zoom)
         except Exception:
             logging.exception('%s PTZ stop failed during bridge shutdown',r.name)
         else:
             with r.stop_condition:
                 if r.movement_generation==generation:
-                    r.moving=False; r.stop_deadline=None; r.stop_again_generation=None
+                    if stop_pt:r.moving_pt=False
+                    if stop_zoom:r.moving_zoom=False
+                    self.sync_moving(r)
+                    if not r.moving:r.stop_deadline=None
+                    r.stop_again_generation=None
     def shutdown_stops(self):
         # Start every active camera's best-effort Stop before waiting for any
         # one HTTP request. A slow/unreachable camera therefore cannot prevent
@@ -232,8 +241,9 @@ class Bridge:
                     generation=r.movement_generation
                     r.stop_again_generation=None
                     was_moving=r.moving
+                    stop_pt=r.moving_pt; stop_zoom=r.moving_zoom
                     if was_moving:r.stop_deadline=time.monotonic()+float(self.o.get('ptz_transition_safety_seconds',.5))
-                try:r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+                try:r.client.stop_move(pan_tilt=stop_pt or r.caps.get('pan_tilt_continuous',False),zoom=stop_zoom or r.caps.get('zoom_continuous',False))
                 except Exception:
                     if was_moving:
                         with r.stop_condition:
@@ -242,7 +252,7 @@ class Bridge:
                     raise
                 with r.stop_condition:
                     if r.movement_generation==generation:
-                        r.moving=False; r.stop_deadline=None
+                        r.moving_pt=False; r.moving_zoom=False; self.sync_moving(r); r.stop_deadline=None
                 return
             pan=max(-1,min(1,float(d.get('pan',0)))); tilt=max(-1,min(1,float(d.get('tilt',0)))); zoom=max(-1,min(1,float(d.get('zoom',0))))
             want_pt=abs(pan)>1e-6 or abs(tilt)>1e-6; want_z=abs(zoom)>1e-6
@@ -253,7 +263,7 @@ class Bridge:
             # Arm the safety stop before sending ContinuousMove. If the camera
             # accepts the command but its HTTP response is lost, the request
             # raises ambiguously and we must still consider it potentially moving.
-            generation=self.arm_movement(r)
+            generation=self.arm_movement(r,want_pt,want_z)
             try:
                 r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
             finally:
@@ -266,24 +276,24 @@ class Bridge:
                         if r.stop_in_progress:
                             r.stop_again_generation=generation
                         elif not r.moving:
-                            r.moving=True
+                            r.moving_pt=bool(want_pt); r.moving_zoom=bool(want_z); self.sync_moving(r)
                             r.stop_deadline=time.monotonic()
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
             pan=float(d['pan']); tilt=float(d['tilt'])
             zoom=float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None
             speed=float(d['speed']) if 'speed' in d else None
-            self.target_movement(r,lambda:r.client.absolute_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed))
+            self.target_movement(r,lambda:r.client.absolute_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed),affects_pt=True,affects_zoom=zoom is not None)
         elif action=='relative':
             if not r.caps.get('pan_tilt_relative'):raise RuntimeError('relative pan/tilt unsupported')
             pan=float(d.get('pan',0)); tilt=float(d.get('tilt',0))
             zoom=float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_relative') else None
             speed=float(d['speed']) if 'speed' in d else None
-            self.target_movement(r,lambda:r.client.relative_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed))
+            self.target_movement(r,lambda:r.client.relative_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed),affects_pt=True,affects_zoom=zoom is not None)
         elif action=='preset':
             token=str(d['token'])
             if not token:raise ValueError('preset token required')
-            self.target_movement(r,lambda:r.client.goto_preset(token))
+            self.target_movement(r,lambda:r.client.goto_preset(token),affects_pt=True,affects_zoom=False)
         r.next_poll=0
     def coalesce_ptz(self,first):
         # Coalesce only a consecutive run of velocity PTZ commands for the
