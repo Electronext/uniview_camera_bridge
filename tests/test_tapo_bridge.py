@@ -364,6 +364,15 @@ class Tests(unittest.TestCase):
         self.assertEqual(c.calls[1],('stop_move',{'pan_tilt':False,'zoom':True}))
         self.assertFalse(r.moving_zoom)
 
+    def test_failed_preset_zoom_prestop_does_not_issue_preset_and_rearms_zoom(self):
+        r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'zoom':.5}); c.stop_failures=1
+        with self.assertRaises(RuntimeError):b.execute(r,'preset',{'token':'1'})
+        self.assertNotIn('goto_preset',[name for name,_ in c.calls])
+        self.assertTrue(r.moving_zoom); self.assertIsNotNone(r.stop_deadline_zoom)
+        self.assertLessEqual(r.stop_deadline_zoom,time.monotonic()+.05)
+
     def test_ptz_stop_is_a_coalescing_barrier(self):
         r,c=self.runtime(); b=app.Bridge({}); first=(r.camera_id,'ptz',{'pan':.1})
         b.q.put((r.camera_id,'ptz',{'pan':.2})); b.q.put((r.camera_id,'ptz',{'stop':True})); b.q.put((r.camera_id,'ptz',{'pan':.8}))
