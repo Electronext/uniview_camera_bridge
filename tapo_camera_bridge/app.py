@@ -22,12 +22,15 @@ class CameraRuntime:
     safety_client:ONVIFCamera|None=None
     moving:bool=False; stop_deadline:float|None=None; next_poll:float=0; last:PTZPosition|None=None
     movement_generation:int=0; stop_in_progress:bool=False; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
+    stop_condition:threading.Condition=field(init=False,repr=False)
+    def __post_init__(self):
+        self.stop_condition=threading.Condition(self.state_lock)
 
 class Bridge:
     def __init__(self,opts):
         self.o=opts; self.base=str(opts.get('mqtt_topic','tapo_camera_bridge')).strip('/'); self.dp=str(opts.get('mqtt_discovery_prefix','homeassistant')).strip('/')
         self.q=queue.Queue(); self.cameras={}; self.mqtt=None
-        self.watchdog_stop=threading.Event(); self.watchdog_thread=None
+        self.watchdog_stop=threading.Event(); self.watchdog_threads={}
     def device(self,r):
         return {'identifiers':[f'tapo_bridge_{r.camera_id}'],'name':r.name,'manufacturer':r.info.get('manufacturer') or 'TP-Link','model':r.info.get('model') or 'ONVIF camera','sw_version':r.info.get('firmware_version') or VERSION}
     def pub(self,t,p,retain=False):
@@ -81,54 +84,62 @@ class Bridge:
         c.will_set(f'{self.base}/availability','offline',retain=True); c.on_connect=self.on_connect; c.on_message=self.on_message; self.mqtt=c
         c.connect_async(str(self.o.get('mqtt_host','core-mosquitto')),int(self.o.get('mqtt_port',1883)),60); c.loop_start()
     def arm_movement(self,r):
-        with r.state_lock:
+        # Serialize a new movement behind any Stop already in flight for this
+        # camera. The Condition+state_lock makes the ordering decision atomic:
+        # either this movement is armed first (and a later Stop applies to it),
+        # or an already-started Stop finishes/fails before movement is sent.
+        with r.stop_condition:
+            while r.stop_in_progress:
+                r.stop_condition.wait(.1)
             r.movement_generation+=1
             r.moving=True
             r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
             return r.movement_generation
     def clear_movement(self,r):
-        with r.state_lock:
+        with r.stop_condition:
             r.moving=False; r.stop_deadline=None
     def safety_stop_once(self,r):
-        with r.state_lock:
+        with r.stop_condition:
             if not r.moving or r.stop_in_progress:return False
             r.stop_in_progress=True; generation=r.movement_generation
         try:
             (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
         except Exception as e:
             retry=max(.1,float(self.o.get('ptz_stop_retry_seconds',.5)))
-            with r.state_lock:
+            with r.stop_condition:
                 if r.movement_generation==generation and r.moving:r.stop_deadline=time.monotonic()+retry
                 r.stop_in_progress=False
+                r.stop_condition.notify_all()
             logging.exception('%s PTZ safety stop failed; retrying in %.1f s',r.name,retry)
             self.publish_state(r,False,str(e))
             return False
         else:
-            with r.state_lock:
-                # A newer ContinuousMove may have been issued while Stop was in
-                # flight. Do not clear that newer command's watchdog state.
+            with r.stop_condition:
                 if r.movement_generation==generation:
                     r.moving=False; r.stop_deadline=None
                 r.stop_in_progress=False
+                r.stop_condition.notify_all()
             return True
-    def watchdog_once(self,now_mono=None):
+    def watchdog_once(self,r,now_mono=None):
         t=time.monotonic() if now_mono is None else now_mono
-        for r in list(self.cameras.values()):
-            with r.state_lock:
-                due=r.moving and r.stop_deadline is not None and t>=r.stop_deadline and not r.stop_in_progress
-            if due:self.safety_stop_once(r)
-    def watchdog_loop(self):
+        with r.stop_condition:
+            due=r.moving and r.stop_deadline is not None and t>=r.stop_deadline and not r.stop_in_progress
+        if due:self.safety_stop_once(r)
+    def watchdog_loop(self,r):
         interval=max(.02,min(.1,float(self.o.get('ptz_watchdog_interval_seconds',.05))))
-        while not self.watchdog_stop.wait(interval):self.watchdog_once()
+        while not self.watchdog_stop.wait(interval):self.watchdog_once(r)
     def start_watchdog(self):
-        self.watchdog_stop.clear()
-        self.watchdog_thread=threading.Thread(target=self.watchdog_loop,name='ptz-safety-watchdog',daemon=True)
-        self.watchdog_thread.start()
+        self.watchdog_stop.clear(); self.watchdog_threads={}
+        for cid,r in self.cameras.items():
+            t=threading.Thread(target=self.watchdog_loop,args=(r,),name=f'ptz-safety-{cid}',daemon=True)
+            self.watchdog_threads[cid]=t; t.start()
     def stop_watchdog(self):
         self.watchdog_stop.set()
-        if self.watchdog_thread and self.watchdog_thread is not threading.current_thread():
-            self.watchdog_thread.join(timeout=.25)
-        self.watchdog_thread=None
+        current=threading.current_thread()
+        for t in list(self.watchdog_threads.values()):
+            if t is not current:t.join(timeout=.25)
+        self.watchdog_threads={}
+
 
     def execute(self,r,action,d):
         if action=='ptz':
