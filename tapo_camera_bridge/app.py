@@ -83,11 +83,15 @@ class Bridge:
         if user:c.username_pw_set(user,str(self.o.get('mqtt_password','')))
         c.will_set(f'{self.base}/availability','offline',retain=True); c.on_connect=self.on_connect; c.on_message=self.on_message; self.mqtt=c
         c.connect_async(str(self.o.get('mqtt_host','core-mosquitto')),int(self.o.get('mqtt_port',1883)),60); c.loop_start()
+    def wait_for_safety_stop(self,r):
+        # All movement-producing commands (continuous, absolute, relative and
+        # presets) must remain behind a safety Stop already in flight.
+        with r.stop_condition:
+            while r.stop_in_progress:
+                r.stop_condition.wait(.1)
     def arm_movement(self,r):
-        # Serialize a new movement behind any Stop already in flight for this
-        # camera. The Condition+state_lock makes the ordering decision atomic:
-        # either this movement is armed first (and a later Stop applies to it),
-        # or an already-started Stop finishes/fails before movement is sent.
+        # Serialize ContinuousMove behind any Stop already in flight. Keeping
+        # the check and arming under the same lock makes that ordering atomic.
         with r.stop_condition:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
@@ -158,11 +162,13 @@ class Bridge:
             r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
+            self.wait_for_safety_stop(r)
             r.client.absolute_move(pan=float(d['pan']),tilt=float(d['tilt']),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None),speed=(float(d['speed']) if 'speed' in d else None))
         elif action=='relative':
             if not r.caps.get('pan_tilt_relative'):raise RuntimeError('relative pan/tilt unsupported')
+            self.wait_for_safety_stop(r)
             r.client.relative_move(pan=float(d.get('pan',0)),tilt=float(d.get('tilt',0)),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_relative') else None),speed=(float(d['speed']) if 'speed' in d else None))
-        elif action=='preset':r.client.goto_preset(d['token'])
+        elif action=='preset':self.wait_for_safety_stop(r); r.client.goto_preset(d['token'])
         r.next_poll=0
     def run(self):
         self.setup(); self.mqtt_start(); self.start_watchdog(); idle=max(.2,float(self.o.get('position_poll_seconds',1))); active=max(.1,float(self.o.get('active_position_poll_seconds',.2)))
