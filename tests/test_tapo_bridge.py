@@ -81,6 +81,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(names[:2],['stop_move','continuous_move'])
         self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
 
+    def test_absolute_movement_also_waits_for_inflight_safety_stop(self):
+        r,c=self.runtime(); b=app.Bridge({}); b.cameras[r.camera_id]=r
+        with r.stop_condition:r.stop_in_progress=True
+        worker=threading.Thread(target=lambda:b.execute(r,'absolute',{'pan':.2,'tilt':.3}),daemon=True); worker.start()
+        time.sleep(.05)
+        self.assertFalse(any(name=='absolute_move' for name,_ in c.calls))
+        with r.stop_condition:
+            r.stop_in_progress=False; r.stop_condition.notify_all()
+        worker.join(1)
+        self.assertFalse(worker.is_alive()); self.assertEqual(c.calls[-1][0],'absolute_move')
+
     def test_absolute_and_relative(self):
         r,c=self.runtime(); b=app.Bridge({}); b.execute(r,'absolute',{'pan':.2,'tilt':.58,'speed':.2}); b.execute(r,'relative',{'pan':.05,'tilt':0,'speed':.2}); self.assertEqual([x[0] for x in c.calls],['absolute_move','relative_move'])
 
