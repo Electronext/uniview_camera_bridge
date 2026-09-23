@@ -87,6 +87,31 @@ class MotionTests(unittest.TestCase):
             if safety.block:safety.block.set()
             manager.shutdown()
 
+    def test_watchdog_stops_are_isolated_per_camera(self):
+        manager,p1,s1=self.manager(timeout=.02)
+        p2=FakePrimary(); s2=FakeSafety(); manager.register(3,p2,s2)
+        s1.block=threading.Event(); manager.start()
+        try:
+            manager.submit_move(2,.4,0,0); manager.submit_move(3,.4,0,0)
+            self.assertTrue(s1.seen.wait(.4))
+            self.assertTrue(s2.seen.wait(.4),'camera 3 Stop was starved by blocked camera 2 Stop')
+        finally:
+            s1.block.set(); manager.shutdown()
+
+    def test_target_is_ordered_after_claimed_velocity_and_followup_stop(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        primary.block=threading.Event()
+        target_seen=threading.Event()
+        try:
+            manager.submit_move(2,.4,0,0); self.assertTrue(primary.seen.wait(.3))
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertFalse(target_seen.wait(.05),'target overtook claimed ContinuousMove')
+            primary.block.set()
+            self.assertTrue(target_seen.wait(.4))
+            self.assertGreaterEqual(len(safety.calls),1,'late ContinuousMove was not stopped before target')
+        finally:
+            primary.block.set(); manager.shutdown()
+
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
         safety.failures=1; manager.start()
