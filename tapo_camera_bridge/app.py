@@ -230,12 +230,22 @@ class Bridge:
             stop_pt=bool(stop_pt and r.moving_pt); stop_zoom=bool(stop_zoom and r.moving_zoom)
             if not stop_pt and not stop_zoom:return
             r.movement_generation+=1; generation=r.movement_generation; r.stop_again_generation=None
-        r.client.stop_move(pan_tilt=stop_pt,zoom=stop_zoom)
-        with r.stop_condition:
-            if r.movement_generation==generation:
-                if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None
-                if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
-                self.sync_moving(r)
+        try:
+            r.client.stop_move(pan_tilt=stop_pt,zoom=stop_zoom)
+        except Exception:
+            with r.stop_condition:
+                if r.movement_generation==generation:
+                    now_m=time.monotonic()
+                    if stop_pt and r.moving_pt:r.stop_deadline_pt=now_m
+                    if stop_zoom and r.moving_zoom:r.stop_deadline_zoom=now_m
+                    self.sync_moving(r)
+            raise
+        else:
+            with r.stop_condition:
+                if r.movement_generation==generation:
+                    if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None
+                    if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
+                    self.sync_moving(r)
 
     def execute(self,r,action,d):
         if action=='ptz':
