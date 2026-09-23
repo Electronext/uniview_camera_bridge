@@ -135,13 +135,13 @@ class Bridge:
             r.movement_generation+=1
             r.stop_again_generation=None
             r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; self.sync_moving(r)
-    def safety_stop_once(self,r,expected_generation=None,expected_deadline=None):
+    def safety_stop_once(self,r,expected_generation=None,expected_deadline=None,claim_time=None):
         with r.stop_condition:
             if not r.moving or r.stop_in_progress:return False
             if expected_generation is not None and r.movement_generation!=expected_generation:return False
             self.sync_moving(r)
             if expected_deadline is not None and r.stop_deadline!=expected_deadline:return False
-            now_m=time.monotonic()
+            now_m=time.monotonic() if claim_time is None else claim_time
             stop_pt=bool(r.moving_pt and r.stop_deadline_pt is not None and now_m>=r.stop_deadline_pt)
             stop_zoom=bool(r.moving_zoom and r.stop_deadline_zoom is not None and now_m>=r.stop_deadline_zoom)
             if not stop_pt and not stop_zoom:return False
@@ -178,7 +178,7 @@ class Bridge:
             self.sync_moving(r)
             if not (r.moving and r.stop_deadline is not None and t>=r.stop_deadline and not r.stop_in_progress):return False
             generation=r.movement_generation; deadline=r.stop_deadline
-        return self.safety_stop_once(r,generation,deadline)
+        return self.safety_stop_once(r,generation,deadline,t)
     def watchdog_loop(self,r):
         interval=max(.02,min(.1,float(self.o.get('ptz_watchdog_interval_seconds',.05))))
         while not self.watchdog_stop.wait(interval):self.watchdog_once(r)
@@ -228,6 +228,19 @@ class Bridge:
         wait=max(.1,float(self.o.get('shutdown_stop_wait_seconds',.5)))
         deadline=time.monotonic()+wait
         for t in workers:t.join(max(0,deadline-time.monotonic()))
+
+    def stop_active_axes(self,r,stop_pt=False,stop_zoom=False):
+        with r.stop_condition:
+            while r.stop_in_progress:r.stop_condition.wait(.1)
+            stop_pt=bool(stop_pt and r.moving_pt); stop_zoom=bool(stop_zoom and r.moving_zoom)
+            if not stop_pt and not stop_zoom:return
+            r.movement_generation+=1; generation=r.movement_generation; r.stop_again_generation=None
+        r.client.stop_move(pan_tilt=stop_pt,zoom=stop_zoom)
+        with r.stop_condition:
+            if r.movement_generation==generation:
+                if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None
+                if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
+                self.sync_moving(r)
 
     def execute(self,r,action,d):
         if action=='ptz':
@@ -304,22 +317,28 @@ class Bridge:
         elif action=='preset':
             token=str(d['token'])
             if not token:raise ValueError('preset token required')
+            # Preset metadata does not reliably tell us whether zoom is part of
+            # the preset. Resolve any continuous zoom first so an old zoom
+            # watchdog cannot interrupt GotoPreset.
+            self.stop_active_axes(r,stop_zoom=True)
             self.target_movement(r,lambda:r.client.goto_preset(token),affects_pt=True,affects_zoom=False)
         r.next_poll=0
     def coalesce_ptz(self,first):
-        # Coalesce only a consecutive run of velocity PTZ commands for the
-        # same camera. Any target/Stop/other-camera command is an ordering
-        # barrier and is put back at the front of the queue.
-        latest=first
+        # Consecutive velocity updates are a patch stream: omission means
+        # "leave that axis untouched", so merge latest values per axis instead
+        # of replacing the whole payload. Stop/target/other-camera is a barrier.
+        cid,action,data=first
+        merged=dict(data)
         while True:
             try:x=self.q.get_nowait()
             except queue.Empty:break
-            if x[0]==first[0] and x[1]=='ptz' and not x[2].get('stop'):
-                latest=x
+            if x[0]==cid and x[1]=='ptz' and not x[2].get('stop'):
+                for key in ('pan','tilt','zoom'):
+                    if key in x[2]:merged[key]=x[2][key]
                 continue
             self.pending_command=x
             break
-        return latest
+        return cid,action,merged
     def run(self):
         self.setup(); self.mqtt_start(); self.start_watchdog(); idle=max(.2,float(self.o.get('position_poll_seconds',1))); active=max(.1,float(self.o.get('active_position_poll_seconds',.2)))
         try:
