@@ -21,7 +21,7 @@ class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
     safety_client:ONVIFCamera|None=None
     moving:bool=False; moving_pt:bool=False; moving_zoom:bool=False; stop_deadline:float|None=None; stop_deadline_pt:float|None=None; stop_deadline_zoom:float|None=None; next_poll:float=0; last:PTZPosition|None=None
-    movement_generation:int=0; stop_in_progress:bool=False; stop_in_progress_pt:bool=False; stop_in_progress_zoom:bool=False; stop_again_generation:int|None=None; stopped_generation_pt:int|None=None; stopped_generation_zoom:int|None=None; commanded_pan:float=0.0; commanded_tilt:float=0.0; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
+    movement_generation:int=0; stop_in_progress:bool=False; stop_in_progress_pt:bool=False; stop_in_progress_zoom:bool=False; stop_again_generation:int|None=None; stop_again_pt:bool=False; stop_again_zoom:bool=False; stopped_generation_pt:int|None=None; stopped_generation_zoom:int|None=None; commanded_pan:float=0.0; commanded_tilt:float=0.0; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
     stop_condition:threading.Condition=field(init=False,repr=False)
     def __post_init__(self):
         self.stop_condition=threading.Condition(self.state_lock)
@@ -94,7 +94,7 @@ class Bridge:
         # after the Stop completes so the final wire order is Stop -> target.
         with r.stop_condition:
             while r.stop_in_progress:r.stop_condition.wait(.1)
-            r.movement_generation+=1; generation=r.movement_generation; r.stop_again_generation=None
+            r.movement_generation+=1; generation=r.movement_generation; r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
             old_pt=r.moving_pt; old_zoom=r.moving_zoom
             now_m=time.monotonic(); transition=float(self.o.get('ptz_transition_safety_seconds',.5))
             if affects_pt and old_pt:r.stop_deadline_pt=now_m+min(max(0.0,(r.stop_deadline_pt or now_m)-now_m),transition)
@@ -134,7 +134,7 @@ class Bridge:
             tilt=max(-1,min(1,float(r.commanded_tilt if tilt_patch is None else tilt_patch)))
             if touch_pt and (pan_patch is not None or tilt_patch is not None):want_pt=bool(abs(pan)>1e-6 or abs(tilt)>1e-6)
             old_pt=r.moving_pt; old_zoom=r.moving_zoom
-            r.movement_generation+=1; r.stop_again_generation=None
+            r.movement_generation+=1; r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
             now_m=time.monotonic(); timeout=float(self.o.get('ptz_safety_timeout_seconds',3))
             if touch_pt:
                 r.moving_pt=bool(want_pt or old_pt); r.stop_deadline_pt=now_m+timeout
@@ -172,15 +172,18 @@ class Bridge:
         else:
             with r.stop_condition:
                 stop_again=(r.stop_again_generation==generation)
-                if stop_again:r.stop_again_generation=None
+                again_pt=bool(stop_again and r.stop_again_pt)
+                again_zoom=bool(stop_again and r.stop_again_zoom)
+                if stop_again:
+                    r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
                 if r.movement_generation==generation:
-                    if stop_again:
-                        now_m=time.monotonic()
-                        if stop_pt:r.moving_pt=True; r.stop_deadline_pt=now_m
-                        if stop_zoom:r.moving_zoom=True; r.stop_deadline_zoom=now_m
-                    else:
-                        if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None; r.stopped_generation_pt=generation; r.commanded_pan=0.0; r.commanded_tilt=0.0
-                        if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None; r.stopped_generation_zoom=generation
+                    now_m=time.monotonic()
+                    if stop_pt:
+                        if again_pt:r.moving_pt=True; r.stop_deadline_pt=now_m
+                        else:r.moving_pt=False; r.stop_deadline_pt=None; r.stopped_generation_pt=generation; r.commanded_pan=0.0; r.commanded_tilt=0.0
+                    if stop_zoom:
+                        if again_zoom:r.moving_zoom=True; r.stop_deadline_zoom=now_m
+                        else:r.moving_zoom=False; r.stop_deadline_zoom=None; r.stopped_generation_zoom=generation
                     self.sync_moving(r)
                 r.stop_in_progress=False; r.stop_in_progress_pt=False; r.stop_in_progress_zoom=False; r.stop_condition.notify_all()
             return True
@@ -226,7 +229,7 @@ class Bridge:
                     if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
                     self.sync_moving(r)
                     if not r.moving:r.stop_deadline=None
-                    r.stop_again_generation=None
+                    r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
     def shutdown_stops(self):
         # Start every active camera's best-effort Stop before waiting for any
         # one HTTP request. A slow/unreachable camera therefore cannot prevent
@@ -246,7 +249,7 @@ class Bridge:
             while r.stop_in_progress:r.stop_condition.wait(.1)
             stop_pt=bool(stop_pt and r.moving_pt); stop_zoom=bool(stop_zoom and r.moving_zoom)
             if not stop_pt and not stop_zoom:return
-            r.movement_generation+=1; generation=r.movement_generation; r.stop_again_generation=None
+            r.movement_generation+=1; generation=r.movement_generation; r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
         try:
             r.client.stop_move(pan_tilt=stop_pt,zoom=stop_zoom)
         except Exception:
@@ -340,7 +343,8 @@ class Bridge:
                                 r.moving_zoom=bool(want_z)
                                 r.stop_deadline_zoom=(now_m+timeout if want_z and stopped_zoom else armed_deadline_zoom if want_z else None)
                             self.sync_moving(r)
-                            if overlap_pt or overlap_zoom:r.stop_again_generation=generation
+                            if overlap_pt or overlap_zoom:
+                                r.stop_again_generation=generation; r.stop_again_pt=overlap_pt; r.stop_again_zoom=overlap_zoom
                         elif not r.moving:
                             now_m=time.monotonic()
                             if touch_pt:r.moving_pt=bool(want_pt or old_pt); r.stop_deadline_pt=now_m if r.moving_pt else None
