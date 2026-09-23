@@ -16,7 +16,7 @@ class _PTZState:
     generation: int = 0
     moving: bool = False
     deadline: float | None = None
-    pending: tuple[int, str, Any] | None = None
+    pending: list[tuple[int, str, Any]] = field(default_factory=list)
     worker: threading.Thread | None = None
     stop_required: bool = False
     stop_retry_due: float | None = None
@@ -78,7 +78,11 @@ class UniviewPTZMotionManager:
             state.stop_required = False
             state.stop_retry_due = None
             # Velocity samples are replaceable until the worker claims one.
-            state.pending = (generation, "move", (pan, tilt, zoom))
+            # Replace only a still-pending velocity tail. Targets are barriers.
+            if state.pending and state.pending[-1][1] == "move":
+                state.pending[-1] = (generation, "move", (pan, tilt, zoom))
+            else:
+                state.pending.append((generation, "move", (pan, tilt, zoom)))
             self._ensure_worker_locked(state)
 
     def submit_target(self, source_id: int, send: Callable[[], Any]) -> threading.Event:
@@ -98,30 +102,26 @@ class UniviewPTZMotionManager:
             state.deadline = None
             state.stop_required = False
             state.stop_retry_due = None
-            state.pending = (generation, "target", (send, done))
+            state.pending.append((generation, "target", (send, done)))
             self._ensure_worker_locked(state)
         return done
 
     def _worker_loop(self, state: _PTZState) -> None:
         while not self._shutdown.is_set():
             with state.lock:
-                item = state.pending
-                state.pending = None
-                if item is None:
+                if not state.pending:
                     state.worker = None
                     return
-                generation, kind, payload = item
-                if generation != state.generation:
-                    continue
-                if kind == "move" and not state.moving:
+                generation, kind, payload = state.pending.pop(0)
+                # Older work is still meaningful when a target barrier follows
+                # it; explicit Stop clears the queue instead.
+                if kind == "move" and not state.moving and not state.pending:
                     continue
             # Never let newly queued work overtake an already-started safety
             # Stop. Revalidate after it completes.
             state.stop_done.wait()
             with state.lock:
-                if generation != state.generation:
-                    continue
-                if kind == "move" and not state.moving:
+                if kind == "move" and not state.moving and not state.pending:
                     continue
             if kind == "target":
                 send, done = payload
@@ -171,7 +171,7 @@ class UniviewPTZMotionManager:
         with state.lock:
             state.generation += 1
             generation = state.generation
-            state.pending = None
+            state.pending.clear()
             state.moving = False
             state.deadline = None
             state.stop_required = True
@@ -208,7 +208,7 @@ class UniviewPTZMotionManager:
                     continue
                 if due_move:
                     state.generation += 1
-                    state.pending = None
+                    state.pending.clear()
                     state.moving = False
                     state.deadline = None
                     state.stop_required = True
