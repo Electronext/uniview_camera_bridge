@@ -84,20 +84,23 @@ class Bridge:
         c.will_set(f'{self.base}/availability','offline',retain=True); c.on_connect=self.on_connect; c.on_message=self.on_message; self.mqtt=c
         c.connect_async(str(self.o.get('mqtt_host','core-mosquitto')),int(self.o.get('mqtt_port',1883)),60); c.loop_start()
     def target_movement(self,r,send):
-        # The replacement payload must already be validated before entering
-        # here. Serialize behind any Stop already on the wire, then retire the
-        # previous ContinuousMove generation. If the target request fails
-        # ambiguously, re-arm safety immediately: the old continuous motion may
-        # still be active and the target request may or may not have reached
-        # the camera.
+        # The replacement payload must already be validated. If ContinuousMove
+        # may still be active, keep safety armed while the synchronous target
+        # request is in flight. A watchdog Stop may therefore overtake a stalled
+        # target request; generation reconciliation below then prevents stale
+        # state from reviving that old motion.
         with r.stop_condition:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
             r.movement_generation+=1
             generation=r.movement_generation
             was_moving=r.moving
-            r.moving=False
-            r.stop_deadline=None
+            if was_moving:
+                remaining=max(0.0,(r.stop_deadline or time.monotonic())-time.monotonic())
+                r.stop_deadline=time.monotonic()+min(remaining,float(self.o.get('ptz_transition_safety_seconds',.5)))
+            else:
+                r.moving=False
+                r.stop_deadline=None
         try:
             send()
         except Exception:
@@ -107,6 +110,11 @@ class Bridge:
                         r.moving=True
                         r.stop_deadline=time.monotonic()
             raise
+        else:
+            with r.stop_condition:
+                if r.movement_generation==generation:
+                    r.moving=False
+                    r.stop_deadline=None
 
     def arm_movement(self,r):
         # Serialize ContinuousMove behind any Stop already in flight. Keeping
@@ -191,18 +199,35 @@ class Bridge:
     def execute(self,r,action,d):
         if action=='ptz':
             if d.get('stop'):
-                r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False)); self.clear_movement(r); return
+                with r.stop_condition:
+                    while r.stop_in_progress:
+                        r.stop_condition.wait(.1)
+                    was_moving=r.moving
+                try:r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+                except Exception:
+                    if was_moving:
+                        with r.stop_condition:
+                            r.moving=True; r.stop_deadline=time.monotonic()
+                    raise
+                self.clear_movement(r); return
             pan=max(-1,min(1,float(d.get('pan',0)))); tilt=max(-1,min(1,float(d.get('tilt',0)))); zoom=max(-1,min(1,float(d.get('zoom',0))))
             want_pt=abs(pan)>1e-6 or abs(tilt)>1e-6; want_z=abs(zoom)>1e-6
             if want_pt and not r.caps.get('pan_tilt_continuous'):raise RuntimeError('continuous pan/tilt unsupported')
             if want_z and not r.caps.get('zoom_continuous'):raise RuntimeError('continuous zoom unsupported')
             if not want_pt and not want_z:
-                r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False)); self.clear_movement(r); return
+                return self.execute(r,'ptz',{'stop':True})
             # Arm the safety stop before sending ContinuousMove. If the camera
             # accepts the command but its HTTP response is lost, the request
             # raises ambiguously and we must still consider it potentially moving.
-            self.arm_movement(r)
+            generation=self.arm_movement(r)
             r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
+            # If the safety Stop completed while ContinuousMove was blocked,
+            # this request may have reached the camera after that Stop. Re-arm
+            # an immediate Stop rather than trusting the now-stale completion.
+            with r.stop_condition:
+                if r.movement_generation==generation and not r.moving and not r.stop_in_progress:
+                    r.moving=True
+                    r.stop_deadline=time.monotonic()
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
             pan=float(d['pan']); tilt=float(d['tilt'])
