@@ -55,7 +55,8 @@ class Tests(unittest.TestCase):
         r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
         b.arm_movement(r)
         with r.stop_condition:
-            generation=r.movement_generation; old_deadline=r.stop_deadline; r.stop_deadline=old_deadline+1
+            generation=r.movement_generation; old_deadline=r.stop_deadline
+            r.stop_deadline_pt=old_deadline+1; b.sync_moving(r)
         self.assertFalse(b.safety_stop_once(r,generation,old_deadline))
         self.assertFalse(any(name=='stop_move' for name,_ in c.calls))
 
