@@ -7,7 +7,7 @@
 - Add PTZ safety timeout and command coalescing for touch/joystick control.
 - Enforce continuous-move safety with independent per-camera watchdogs and ONVIF safety sessions, including retryable Stops and serialization of new movement behind an in-flight safety Stop.
 - Make continuous-to-target transitions transactional: validate target payloads first, retain a bounded safety deadline while the replacement request is in flight, and immediately re-arm safety if target transmission fails ambiguously.
-- Reconcile delayed ContinuousMove completion with its watchdog generation so a movement delivered after its first safety Stop is stopped again; preserve safety state on failed explicit Stops.
+- Reconcile every delayed ContinuousMove outcome—success or transport failure—with its watchdog generation. If the outcome overlaps an in-flight Stop, require a post-flight Stop before declaring that generation safe; preserve safety state on failed explicit Stops.
 - Preserve command ordering by coalescing only consecutive velocity PTZ updates and treating Stop, target moves, and other-camera commands as barriers.
 - Dispatch shutdown Stops independently per camera with bounded waiting.
 - Escape dynamic ONVIF SOAP text consistently, including usernames and camera-supplied profile, configuration, and preset tokens.
