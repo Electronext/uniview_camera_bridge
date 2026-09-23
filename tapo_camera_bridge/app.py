@@ -83,12 +83,18 @@ class Bridge:
         if user:c.username_pw_set(user,str(self.o.get('mqtt_password','')))
         c.will_set(f'{self.base}/availability','offline',retain=True); c.on_connect=self.on_connect; c.on_message=self.on_message; self.mqtt=c
         c.connect_async(str(self.o.get('mqtt_host','core-mosquitto')),int(self.o.get('mqtt_port',1883)),60); c.loop_start()
-    def wait_for_safety_stop(self,r):
-        # All movement-producing commands (continuous, absolute, relative and
-        # presets) must remain behind a safety Stop already in flight.
+    def begin_target_movement(self,r):
+        # Targeted moves supersede any pending ContinuousMove watchdog. First
+        # wait behind a Stop already on the wire, then atomically retire the
+        # old continuous-movement generation/deadline before sending the new
+        # absolute/relative/preset command.
         with r.stop_condition:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
+            r.movement_generation+=1
+            r.moving=False
+            r.stop_deadline=None
+            return r.movement_generation
     def arm_movement(self,r):
         # Serialize ContinuousMove behind any Stop already in flight. Keeping
         # the check and arming under the same lock makes that ordering atomic.
@@ -145,6 +151,30 @@ class Bridge:
         self.watchdog_threads={}
 
 
+    def shutdown_stop_one(self,r):
+        with r.stop_condition:
+            moving=r.moving
+        if not moving:return
+        try:
+            (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+        except Exception:
+            logging.exception('%s PTZ stop failed during bridge shutdown',r.name)
+        else:
+            self.clear_movement(r)
+    def shutdown_stops(self):
+        # Start every active camera's best-effort Stop before waiting for any
+        # one HTTP request. A slow/unreachable camera therefore cannot prevent
+        # the other cameras from receiving their shutdown Stop.
+        workers=[]
+        for r in self.cameras.values():
+            with r.stop_condition:moving=r.moving
+            if moving:
+                t=threading.Thread(target=self.shutdown_stop_one,args=(r,),name=f'ptz-shutdown-{r.camera_id}',daemon=True)
+                workers.append(t); t.start()
+        wait=max(.1,float(self.o.get('shutdown_stop_wait_seconds',.5)))
+        deadline=time.monotonic()+wait
+        for t in workers:t.join(max(0,deadline-time.monotonic()))
+
     def execute(self,r,action,d):
         if action=='ptz':
             if d.get('stop'):
@@ -162,13 +192,13 @@ class Bridge:
             r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
-            self.wait_for_safety_stop(r)
+            self.begin_target_movement(r)
             r.client.absolute_move(pan=float(d['pan']),tilt=float(d['tilt']),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None),speed=(float(d['speed']) if 'speed' in d else None))
         elif action=='relative':
             if not r.caps.get('pan_tilt_relative'):raise RuntimeError('relative pan/tilt unsupported')
-            self.wait_for_safety_stop(r)
+            self.begin_target_movement(r)
             r.client.relative_move(pan=float(d.get('pan',0)),tilt=float(d.get('tilt',0)),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_relative') else None),speed=(float(d['speed']) if 'speed' in d else None))
-        elif action=='preset':self.wait_for_safety_stop(r); r.client.goto_preset(d['token'])
+        elif action=='preset':self.begin_target_movement(r); r.client.goto_preset(d['token'])
         r.next_poll=0
     def run(self):
         self.setup(); self.mqtt_start(); self.start_watchdog(); idle=max(.2,float(self.o.get('position_poll_seconds',1))); active=max(.1,float(self.o.get('active_position_poll_seconds',.2)))
@@ -195,17 +225,9 @@ class Bridge:
                         except Exception as e:logging.debug('%s status poll failed: %s',r.name,e); self.publish_state(r,False,str(e)); r.next_poll=t+idle
         finally:
             self.stop_watchdog()
-            # ContinuousMove has no camera-side timeout, so do not rely on the
-            # watchdog during add-on shutdown/restart.
-            for r in self.cameras.values():
-                with r.state_lock:moving=r.moving
-                if moving:
-                    try:
-                        (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
-                    except Exception:
-                        logging.exception('%s PTZ stop failed during bridge shutdown',r.name)
-                    else:
-                        self.clear_movement(r)
+            # ContinuousMove has no camera-side timeout. Dispatch shutdown
+            # Stops independently so one unreachable camera cannot starve the rest.
+            self.shutdown_stops()
             if self.mqtt:self.pub(f'{self.base}/availability','offline',True); self.mqtt.disconnect(); self.mqtt.loop_stop()
 
 def main():
