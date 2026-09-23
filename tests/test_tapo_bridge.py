@@ -60,7 +60,7 @@ class Tests(unittest.TestCase):
         self.assertFalse(any(name=='stop_move' for name,_ in c.calls))
 
     def test_failed_safety_stop_keeps_retry_state(self):
-        r,c=self.runtime(); b=app.Bridge({'ptz_stop_retry_seconds':.5}); b.cameras[r.camera_id]=r; b.arm_movement(r); r.stop_deadline=app.time.monotonic()-1; c.stop_failures=1
+        r,c=self.runtime(); b=app.Bridge({'ptz_stop_retry_seconds':.5}); b.cameras[r.camera_id]=r; b.arm_movement(r); r.stop_deadline_pt=app.time.monotonic()-1; b.sync_moving(r); c.stop_failures=1
         self.assertFalse(b.safety_stop_once(r))
         self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline); self.assertFalse(r.stop_in_progress)
 
@@ -180,7 +180,7 @@ class Tests(unittest.TestCase):
     def test_new_movement_waits_for_inflight_safety_stop(self):
         r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
         c.stop_block=threading.Event(); b.arm_movement(r)
-        with r.stop_condition:r.stop_deadline=time.monotonic()-.01
+        with r.stop_condition:r.stop_deadline_pt=time.monotonic()-.01; b.sync_moving(r)
         b.start_watchdog()
         self.assertTrue(c.stop_seen.wait(.4),'safety Stop did not start')
         worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.7,'tilt':0}),daemon=True); worker.start()
@@ -249,6 +249,37 @@ class Tests(unittest.TestCase):
                 b.execute(r,'ptz',payload)
                 b.watchdog_once(r,r.stop_deadline+.01)
                 self.assertEqual(c.calls[-1],('stop_move',expected))
+
+    def test_pt_transition_has_short_deadline_while_zoom_keeps_normal_deadline(self):
+        r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3,'ptz_transition_safety_seconds':.05})
+        b.execute(r,'ptz',{'pan':.3,'zoom':.4})
+        zoom_deadline=r.stop_deadline_zoom
+        c.target_blocks['absolute_move']=threading.Event()
+        worker=threading.Thread(target=lambda:b.execute(r,'absolute',{'pan':.2,'tilt':.3}),daemon=True); worker.start()
+        self.assertTrue(c.target_seen.setdefault('absolute_move',threading.Event()).wait(.4))
+        with r.stop_condition:
+            self.assertLess(r.stop_deadline_pt,r.stop_deadline_zoom)
+            pt_deadline=r.stop_deadline_pt
+        b.watchdog_once(r,pt_deadline+.01)
+        self.assertEqual(c.calls[-1],('stop_move',{'pan_tilt':True,'zoom':False}))
+        self.assertTrue(r.moving_zoom); self.assertEqual(r.stop_deadline_zoom,zoom_deadline)
+        c.target_blocks['absolute_move'].set(); worker.join(1)
+
+    def test_late_success_rearms_deadline_after_completed_stop(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
+        c.move_block=threading.Event(); b.start_watchdog()
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.4}),daemon=True); worker.start()
+        try:
+            self.assertTrue(c.stop_seen.wait(.5))
+            for _ in range(50):
+                if not r.moving:break
+                time.sleep(.01)
+            self.assertFalse(r.moving)
+            c.move_block.set(); worker.join(1)
+            self.assertTrue(r.moving_pt); self.assertIsNotNone(r.stop_deadline_pt); self.assertIsNotNone(r.stop_deadline)
+        finally:
+            c.move_block.set(); b.stop_watchdog()
 
     def test_target_moves_retire_pending_continuous_deadline(self):
         for action,payload,call_name in [
@@ -333,7 +364,7 @@ class Tests(unittest.TestCase):
         # Model a newer generation arriving while the old shutdown request is pending.
         with r.stop_condition:
             r.movement_generation+=1; newer=r.movement_generation
-            r.moving=True; r.stop_deadline=time.monotonic()+3
+            r.moving_pt=True; r.stop_deadline_pt=time.monotonic()+3; b.sync_moving(r)
         safety.stop_block.set(); worker.join(1)
         self.assertEqual(r.movement_generation,newer); self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
 
