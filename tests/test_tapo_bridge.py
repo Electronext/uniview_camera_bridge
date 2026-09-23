@@ -539,6 +539,22 @@ class Tests(unittest.TestCase):
         self.assertFalse(r.moving)
 
 
+    def test_nonfinite_absolute_and_relative_targets_are_rejected(self):
+        cases=[
+            ('absolute',{'pan':float('nan'),'tilt':0}),
+            ('absolute',{'pan':0,'tilt':float('inf')}),
+            ('absolute',{'pan':0,'tilt':0,'speed':float('-inf')}),
+            ('relative',{'pan':float('inf'),'tilt':0}),
+            ('relative',{'pan':0,'tilt':float('nan')}),
+            ('relative',{'pan':0,'tilt':0,'speed':float('inf')}),
+        ]
+        for action,payload in cases:
+            with self.subTest(action=action,payload=payload):
+                r,c=self.runtime(); b=app.Bridge({})
+                with self.assertRaises(ValueError):b.execute(r,action,payload)
+                self.assertEqual(c.calls,[]); self.assertFalse(r.moving)
+
+
     def test_absolute_and_relative(self):
         r,c=self.runtime(); b=app.Bridge({}); b.execute(r,'absolute',{'pan':.2,'tilt':.58,'speed':.2}); b.execute(r,'relative',{'pan':.05,'tilt':0,'speed':.2}); self.assertEqual([x[0] for x in c.calls],['absolute_move','relative_move'])
 
