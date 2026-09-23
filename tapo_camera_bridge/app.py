@@ -21,7 +21,7 @@ class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
     safety_client:ONVIFCamera|None=None
     moving:bool=False; moving_pt:bool=False; moving_zoom:bool=False; stop_deadline:float|None=None; stop_deadline_pt:float|None=None; stop_deadline_zoom:float|None=None; next_poll:float=0; last:PTZPosition|None=None
-    movement_generation:int=0; stop_in_progress:bool=False; stop_again_generation:int|None=None; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
+    movement_generation:int=0; stop_in_progress:bool=False; stop_again_generation:int|None=None; stopped_generation_pt:int|None=None; stopped_generation_zoom:int|None=None; commanded_pan:float=0.0; commanded_tilt:float=0.0; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
     stop_condition:threading.Condition=field(init=False,repr=False)
     def __post_init__(self):
         self.stop_condition=threading.Condition(self.state_lock)
@@ -109,7 +109,7 @@ class Bridge:
         else:
             with r.stop_condition:
                 if r.movement_generation==generation:
-                    if affects_pt:r.moving_pt=False; r.stop_deadline_pt=None
+                    if affects_pt:r.moving_pt=False; r.stop_deadline_pt=None; r.commanded_pan=0.0; r.commanded_tilt=0.0
                     if affects_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
                     self.sync_moving(r)
 
@@ -129,7 +129,7 @@ class Bridge:
         with r.stop_condition:
             r.movement_generation+=1
             r.stop_again_generation=None
-            r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; self.sync_moving(r)
+            r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; r.commanded_pan=0.0; r.commanded_tilt=0.0; self.sync_moving(r)
     def safety_stop_once(self,r,expected_generation=None,expected_deadline=None,claim_time=None):
         with r.stop_condition:
             if not r.moving or r.stop_in_progress:return False
@@ -162,8 +162,8 @@ class Bridge:
                         if stop_pt:r.moving_pt=True; r.stop_deadline_pt=now_m
                         if stop_zoom:r.moving_zoom=True; r.stop_deadline_zoom=now_m
                     else:
-                        if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None
-                        if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
+                        if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None; r.stopped_generation_pt=generation; r.commanded_pan=0.0; r.commanded_tilt=0.0
+                        if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None; r.stopped_generation_zoom=generation
                     self.sync_moving(r)
                 r.stop_in_progress=False; r.stop_condition.notify_all()
             return True
@@ -205,7 +205,7 @@ class Bridge:
         else:
             with r.stop_condition:
                 if r.movement_generation==generation:
-                    if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None
+                    if stop_pt:r.moving_pt=False; r.stop_deadline_pt=None; r.commanded_pan=0.0; r.commanded_tilt=0.0
                     if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
                     self.sync_moving(r)
                     if not r.moving:r.stop_deadline=None
@@ -272,33 +272,52 @@ class Bridge:
                     raise
                 with r.stop_condition:
                     if r.movement_generation==generation:
-                        r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; self.sync_moving(r)
+                        r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; r.commanded_pan=0.0; r.commanded_tilt=0.0; self.sync_moving(r)
                 return
-            touch_pt=('pan' in d or 'tilt' in d); touch_zoom=('zoom' in d)
-            pan=max(-1,min(1,float(d.get('pan',0)))); tilt=max(-1,min(1,float(d.get('tilt',0)))); zoom=max(-1,min(1,float(d.get('zoom',0))))
-            want_pt=touch_pt and (abs(pan)>1e-6 or abs(tilt)>1e-6); want_z=touch_zoom and abs(zoom)>1e-6
-            if want_pt and not r.caps.get('pan_tilt_continuous'):raise RuntimeError('continuous pan/tilt unsupported')
-            if want_z and not r.caps.get('zoom_continuous'):raise RuntimeError('continuous zoom unsupported')
+            supplied_pt=('pan' in d or 'tilt' in d); supplied_zoom=('zoom' in d)
+            pt_supported=bool(r.caps.get('pan_tilt_continuous')); zoom_supported=bool(r.caps.get('zoom_continuous'))
+            # Capability normalization happens before state mutation and SOAP
+            # serialization. Unsupported explicit zeroes are harmless UI noise;
+            # unsupported non-zero velocity requests remain errors.
+            raw_pan=float(d.get('pan',0)); raw_tilt=float(d.get('tilt',0)); raw_zoom=float(d.get('zoom',0))
+            if supplied_pt and not pt_supported and (abs(raw_pan)>=1e-6 or abs(raw_tilt)>=1e-6):raise RuntimeError('continuous pan/tilt unsupported')
+            if supplied_zoom and not zoom_supported and abs(raw_zoom)>=1e-6:raise RuntimeError('continuous zoom unsupported')
+            touch_pt=bool(supplied_pt and pt_supported); touch_zoom=bool(supplied_zoom and zoom_supported)
             if not touch_pt and not touch_zoom:
+                # A payload containing only explicit zeroes for unsupported axes
+                # has no camera-side meaning and must not become a broad Stop.
+                if supplied_pt or supplied_zoom:return
                 return self.execute(r,'ptz',{'stop':True})
-            # Arm the safety stop before sending ContinuousMove. If the camera
-            # accepts the command but its HTTP response is lost, the request
-            # raises ambiguously and we must still consider it potentially moving.
+            with r.stop_condition:
+                pan=max(-1,min(1,raw_pan if 'pan' in d else r.commanded_pan))
+                tilt=max(-1,min(1,raw_tilt if 'tilt' in d else r.commanded_tilt))
+            zoom=max(-1,min(1,raw_zoom))
+            want_pt=touch_pt and (abs(pan)>1e-6 or abs(tilt)>1e-6); want_z=touch_zoom and abs(zoom)>1e-6
+            # Arm before sending. arm_movement establishes the deadline from
+            # request start; ordinary HTTP success must not extend it.
             generation,old_pt,old_zoom=self.arm_movement(r,want_pt,want_z,touch_pt,touch_zoom)
+            with r.stop_condition:
+                armed_deadline_pt=r.stop_deadline_pt; armed_deadline_zoom=r.stop_deadline_zoom
             succeeded=False
             try:
                 r.client.continuous_move(pan=pan if touch_pt else None,tilt=tilt if touch_pt else None,zoom=zoom if touch_zoom else None)
                 succeeded=True
             finally:
-                # Success and transport failure are both ambiguous with respect
-                # to camera-side ordering. If a Stop is still in flight, mark
-                # this generation for a mandatory post-flight Stop. If that
-                # Stop already completed, immediately arm the follow-up here.
                 with r.stop_condition:
                     if r.movement_generation==generation:
+                        stopped_pt=(r.stopped_generation_pt==generation)
+                        stopped_zoom=(r.stopped_generation_zoom==generation)
                         if succeeded and not r.stop_in_progress:
-                            if touch_pt:r.moving_pt=bool(want_pt); r.stop_deadline_pt=(time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))) if want_pt else None
-                            if touch_zoom:r.moving_zoom=bool(want_z); r.stop_deadline_zoom=(time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))) if want_z else None
+                            now_m=time.monotonic(); timeout=float(self.o.get('ptz_safety_timeout_seconds',3))
+                            if touch_pt:
+                                r.moving_pt=bool(want_pt)
+                                r.commanded_pan=pan; r.commanded_tilt=tilt
+                                # Re-arm only if this generation was actually
+                                # stopped while the HTTP request was pending.
+                                r.stop_deadline_pt=(now_m+timeout if want_pt and stopped_pt else armed_deadline_pt if want_pt else None)
+                            if touch_zoom:
+                                r.moving_zoom=bool(want_z)
+                                r.stop_deadline_zoom=(now_m+timeout if want_z and stopped_zoom else armed_deadline_zoom if want_z else None)
                             self.sync_moving(r)
                         if r.stop_in_progress:
                             r.stop_again_generation=generation
