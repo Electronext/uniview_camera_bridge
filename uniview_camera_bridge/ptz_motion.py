@@ -21,6 +21,8 @@ class _PTZState:
     stop_required: bool = False
     stop_retry_due: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    stop_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    stop_done: threading.Event = field(default_factory=threading.Event, repr=False)
 
 
 class UniviewPTZMotionManager:
@@ -42,7 +44,9 @@ class UniviewPTZMotionManager:
         self._watchdog: threading.Thread | None = None
 
     def register(self, source_id: int, primary: Any, safety: Any) -> None:
-        self.states[source_id] = _PTZState(source_id, primary, safety)
+        state = _PTZState(source_id, primary, safety)
+        state.stop_done.set()
+        self.states[source_id] = state
 
     def start(self) -> None:
         if self._watchdog and self._watchdog.is_alive():
@@ -84,6 +88,12 @@ class UniviewPTZMotionManager:
                 generation, pan, tilt, zoom = item
                 if generation != state.generation or not state.moving:
                     continue
+            # Never let a newly queued move overtake an already-started
+            # safety Stop. After the Stop completes, revalidate the generation.
+            state.stop_done.wait()
+            with state.lock:
+                if generation != state.generation or not state.moving:
+                    continue
             try:
                 state.primary.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
             except Exception:
@@ -98,20 +108,24 @@ class UniviewPTZMotionManager:
                     self._send_followup_stop(state)
 
     def _send_followup_stop(self, state: _PTZState) -> None:
-        try:
-            state.safety.stop_move(pan_tilt=True, zoom=True)
-        except Exception:
-            logging.exception("D%d PTZ follow-up Stop failed; scheduling retry", state.source_id)
-            with state.lock:
-                state.stop_required = True
-                state.stop_retry_due = time.monotonic() + self.stop_retry
-        else:
-            with state.lock:
-                # Do not clear a newer movement generation. The follow-up Stop
-                # is ordered before that movement because the primary worker is
-                # still inside this method.
-                state.stop_required = False
-                state.stop_retry_due = None
+        with state.stop_lock:
+            state.stop_done.clear()
+            try:
+                state.safety.stop_move(pan_tilt=True, zoom=True)
+            except Exception:
+                logging.exception("D%d PTZ follow-up Stop failed; scheduling retry", state.source_id)
+                with state.lock:
+                    state.stop_required = True
+                    state.stop_retry_due = time.monotonic() + self.stop_retry
+            else:
+                with state.lock:
+                    # Do not clear a newer movement generation. The follow-up
+                    # Stop is ordered before that movement because the primary
+                    # worker is still inside this method.
+                    state.stop_required = False
+                    state.stop_retry_due = None
+            finally:
+                state.stop_done.set()
 
     def stop(self, source_id: int) -> bool:
         state = self.states[source_id]
@@ -126,14 +140,18 @@ class UniviewPTZMotionManager:
         return self._attempt_stop(state, generation)
 
     def _attempt_stop(self, state: _PTZState, expected_generation: int) -> bool:
-        try:
-            state.safety.stop_move(pan_tilt=True, zoom=True)
-        except Exception:
-            with state.lock:
-                if state.generation == expected_generation and state.stop_required:
-                    state.stop_retry_due = time.monotonic() + self.stop_retry
-            logging.exception("D%d PTZ Stop failed; retrying in %.1f s", state.source_id, self.stop_retry)
-            return False
+        with state.stop_lock:
+            state.stop_done.clear()
+            try:
+                state.safety.stop_move(pan_tilt=True, zoom=True)
+            except Exception:
+                with state.lock:
+                    if state.generation == expected_generation and state.stop_required:
+                        state.stop_retry_due = time.monotonic() + self.stop_retry
+                logging.exception("D%d PTZ Stop failed; retrying in %.1f s", state.source_id, self.stop_retry)
+                return False
+            finally:
+                state.stop_done.set()
         with state.lock:
             if state.generation == expected_generation:
                 state.stop_required = False
