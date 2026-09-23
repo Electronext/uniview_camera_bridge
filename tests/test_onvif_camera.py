@@ -30,6 +30,28 @@ class Tests(unittest.TestCase):
         self.assertIn('<wsse:Username>viewer&amp;&lt;admin&gt;</wsse:Username>',header)
         self.assertNotIn('viewer&<admin>',header)
 
+    def test_dynamic_onvif_tokens_are_xml_escaped(self):
+        c,s=self.cam([R(OK),R(OK),R(OK),R(OK),R(OK)])
+        c._services={MEDIA_NS:'http://192.168.90.113:2020/onvif/service',PTZ_NS:'http://192.168.90.113:2020/onvif/service'}
+        c._profiles=['profile&<1>']; c._configs={'profile&<1>':'cfg&<2>'}
+        c.absolute_move(pan=.1,tilt=.2)
+        c.relative_move(pan=.1,tilt=0)
+        c.continuous_move(pan=.1)
+        c.stop_move(pan_tilt=True,zoom=False)
+        c.goto_preset('Preset&<3>')
+        bodies=[call[1] for call in s.calls]
+        for body in bodies:
+            self.assertIn('<tptz:ProfileToken>profile&amp;&lt;1&gt;</tptz:ProfileToken>',body)
+            self.assertNotIn('<tptz:ProfileToken>profile&<1></tptz:ProfileToken>',body)
+        self.assertIn('<tptz:PresetToken>Preset&amp;&lt;3&gt;</tptz:PresetToken>',bodies[-1])
+
+    def test_configuration_token_is_xml_escaped(self):
+        c,s=self.cam([R(OPTIONS)])
+        c._services={PTZ_NS:'http://192.168.90.113:2020/onvif/service'}
+        c._profiles=['profile']; c._configs={'profile':'cfg&<2>'}
+        c.get_ptz_configuration_options()
+        self.assertIn('<tptz:ConfigurationToken>cfg&amp;&lt;2&gt;</tptz:ConfigurationToken>',s.calls[-1][1])
+
     def test_shared_service_endpoint(self):
         c,s=self.cam([R(SERVICES)]); x=c.get_services(); self.assertEqual(x[MEDIA_NS],'http://192.168.90.113:2020/onvif/service'); self.assertEqual(x[PTZ_NS],x[MEDIA_NS])
     def test_c220_status_and_spaces(self):
