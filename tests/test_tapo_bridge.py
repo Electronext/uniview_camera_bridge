@@ -41,6 +41,24 @@ class Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):b.execute(r,'ptz',{'pan':.4,'tilt':0})
         self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
 
+    def test_stale_watchdog_claim_cannot_stop_new_generation(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.arm_movement(r)
+        with r.stop_condition:
+            old_generation=r.movement_generation; old_deadline=r.stop_deadline
+        b.arm_movement(r)
+        self.assertFalse(b.safety_stop_once(r,old_generation,old_deadline))
+        self.assertFalse(any(name=='stop_move' for name,_ in c.calls))
+        self.assertTrue(r.moving); self.assertGreater(r.movement_generation,old_generation)
+
+    def test_stale_watchdog_deadline_cannot_claim_same_generation(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.arm_movement(r)
+        with r.stop_condition:
+            generation=r.movement_generation; old_deadline=r.stop_deadline; r.stop_deadline=old_deadline+1
+        self.assertFalse(b.safety_stop_once(r,generation,old_deadline))
+        self.assertFalse(any(name=='stop_move' for name,_ in c.calls))
+
     def test_failed_safety_stop_keeps_retry_state(self):
         r,c=self.runtime(); b=app.Bridge({'ptz_stop_retry_seconds':.5}); b.cameras[r.camera_id]=r; b.arm_movement(r); r.stop_deadline=app.time.monotonic()-1; c.stop_failures=1
         self.assertFalse(b.safety_stop_once(r))
@@ -250,6 +268,27 @@ class Tests(unittest.TestCase):
         self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
         before=len(c.calls); b.watchdog_once(r,time.monotonic()+.01)
         self.assertEqual(c.calls[before][0],'stop_move')
+
+    def test_clear_movement_invalidates_late_generation(self):
+        r,c=self.runtime(); b=app.Bridge({}); generation=b.arm_movement(r)
+        b.clear_movement(r)
+        self.assertGreater(r.movement_generation,generation); self.assertIsNone(r.stop_again_generation)
+        with r.stop_condition:
+            if r.movement_generation==generation:
+                r.moving=True
+        self.assertFalse(r.moving)
+
+    def test_late_shutdown_stop_cannot_clear_new_generation(self):
+        r,c=self.runtime(); safety=FakeClient(); r.safety_client=safety; b=app.Bridge({})
+        b.arm_movement(r); safety.stop_block=threading.Event()
+        worker=threading.Thread(target=lambda:b.shutdown_stop_one(r),daemon=True); worker.start()
+        self.assertTrue(safety.stop_seen.wait(.4))
+        # Model a newer generation arriving while the old shutdown request is pending.
+        with r.stop_condition:
+            r.movement_generation+=1; newer=r.movement_generation
+            r.moving=True; r.stop_deadline=time.monotonic()+3
+        safety.stop_block.set(); worker.join(1)
+        self.assertEqual(r.movement_generation,newer); self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
 
     def test_shutdown_stops_are_dispatched_independently(self):
         r1,c1=self.runtime(); r1.camera_id='cam1'; r1.name='Camera 1'
