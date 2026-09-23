@@ -13,9 +13,9 @@ class FakeClient:
     def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_block=None; self.stop_seen=threading.Event(); self.target_failures={}; self.target_blocks={}; self.target_seen={}
     def continuous_move(self,**kw):
         self.calls.append(('continuous_move',kw))
+        if self.move_block:self.move_block.wait(2)
         if self.move_failures:
             self.move_failures-=1; raise RuntimeError('ambiguous movement failure')
-        if self.move_block:self.move_block.wait(2)
     def stop_move(self,**kw):
         self.calls.append(('stop_move',kw)); self.stop_seen.set()
         if self.stop_block:self.stop_block.wait(2)
@@ -71,8 +71,13 @@ class Tests(unittest.TestCase):
         try:
             self.assertTrue(c.stop_seen.wait(.6),'watchdog did not issue Stop while ContinuousMove was blocked')
             self.assertTrue(worker.is_alive(),'ContinuousMove request should still be blocked when Stop is issued')
+            # Releasing a ContinuousMove after its first safety Stop can
+            # restart motion; wait for the required follow-up Stop.
+            c.stop_seen.clear()
+            c.move_block.set(); worker.join(1)
+            self.assertTrue(c.stop_seen.wait(.5),'late successful move was not followed by Stop')
         finally:
-            c.move_block.set(); worker.join(1); b.stop_watchdog()
+            c.move_block.set(); b.stop_watchdog()
         self.assertFalse(r.moving); self.assertIsNone(r.stop_deadline)
 
     def test_late_continuous_move_is_stopped_again(self):
@@ -236,6 +241,22 @@ class Tests(unittest.TestCase):
         b.execute(r,'ptz',{'zoom':.5}); c.move_failures=1
         with self.assertRaises(RuntimeError):b.execute(r,'ptz',{'pan':.3,'zoom':0})
         self.assertTrue(r.moving_pt); self.assertTrue(r.moving_zoom); self.assertTrue(r.moving)
+
+    def test_partial_pt_patch_rereads_cache_after_inflight_stop(self):
+        r,c=self.runtime(); safety=FakeClient(); r.safety_client=safety
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'tilt':.4})
+        safety.stop_block=threading.Event()
+        with r.stop_condition:
+            r.stop_deadline_pt=time.monotonic()-1; b.sync_moving(r)
+        stopper=threading.Thread(target=lambda:b.safety_stop_once(r),daemon=True); stopper.start()
+        self.assertTrue(safety.stop_seen.wait(.4))
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.3}),daemon=True); worker.start()
+        time.sleep(.03)
+        self.assertTrue(worker.is_alive(),'partial patch did not wait for in-flight Stop')
+        safety.stop_block.set(); stopper.join(1); worker.join(1)
+        self.assertEqual(c.calls[-1],('continuous_move',{'pan':.3,'tilt':0.0,'zoom':None}))
+        self.assertEqual((r.commanded_pan,r.commanded_tilt),(.3,0.0))
 
     def test_separate_pan_patch_preserves_previous_tilt(self):
         r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
