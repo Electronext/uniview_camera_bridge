@@ -121,7 +121,7 @@ class Bridge:
             # counterpart before this generation is armed.
             pan=max(-1,min(1,float(r.commanded_pan if pan_patch is None else pan_patch)))
             tilt=max(-1,min(1,float(r.commanded_tilt if tilt_patch is None else tilt_patch)))
-            if touch_pt:want_pt=bool(abs(pan)>1e-6 or abs(tilt)>1e-6)
+            if touch_pt and (pan_patch is not None or tilt_patch is not None):want_pt=bool(abs(pan)>1e-6 or abs(tilt)>1e-6)
             old_pt=r.moving_pt; old_zoom=r.moving_zoom
             r.movement_generation+=1; r.stop_again_generation=None
             now_m=time.monotonic(); timeout=float(self.o.get('ptz_safety_timeout_seconds',3))
