@@ -202,14 +202,21 @@ class Bridge:
                 with r.stop_condition:
                     while r.stop_in_progress:
                         r.stop_condition.wait(.1)
+                    r.movement_generation+=1
+                    generation=r.movement_generation
                     was_moving=r.moving
+                    if was_moving:r.stop_deadline=time.monotonic()+float(self.o.get('ptz_transition_safety_seconds',.5))
                 try:r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
                 except Exception:
                     if was_moving:
                         with r.stop_condition:
-                            r.moving=True; r.stop_deadline=time.monotonic()
+                            if r.movement_generation==generation and not r.stop_in_progress:
+                                r.moving=True; r.stop_deadline=time.monotonic()
                     raise
-                self.clear_movement(r); return
+                with r.stop_condition:
+                    if r.movement_generation==generation:
+                        r.moving=False; r.stop_deadline=None
+                return
             pan=max(-1,min(1,float(d.get('pan',0)))); tilt=max(-1,min(1,float(d.get('tilt',0)))); zoom=max(-1,min(1,float(d.get('zoom',0))))
             want_pt=abs(pan)>1e-6 or abs(tilt)>1e-6; want_z=abs(zoom)>1e-6
             if want_pt and not r.caps.get('pan_tilt_continuous'):raise RuntimeError('continuous pan/tilt unsupported')
