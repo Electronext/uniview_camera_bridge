@@ -29,7 +29,7 @@ class CameraRuntime:
 class Bridge:
     def __init__(self,opts):
         self.o=opts; self.base=str(opts.get('mqtt_topic','tapo_camera_bridge')).strip('/'); self.dp=str(opts.get('mqtt_discovery_prefix','homeassistant')).strip('/')
-        self.q=queue.Queue(); self.cameras={}; self.mqtt=None
+        self.q=queue.Queue(); self.pending_command=None; self.cameras={}; self.mqtt=None
         self.watchdog_stop=threading.Event(); self.watchdog_threads={}
     def device(self,r):
         return {'identifiers':[f'tapo_bridge_{r.camera_id}'],'name':r.name,'manufacturer':r.info.get('manufacturer') or 'TP-Link','model':r.info.get('model') or 'ONVIF camera','sw_version':r.info.get('firmware_version') or VERSION}
@@ -231,14 +231,19 @@ class Bridge:
             if x[0]==first[0] and x[1]=='ptz' and not x[2].get('stop'):
                 latest=x
                 continue
-            self.q.queue.appendleft(x)
+            self.pending_command=x
             break
         return latest
     def run(self):
         self.setup(); self.mqtt_start(); self.start_watchdog(); idle=max(.2,float(self.o.get('position_poll_seconds',1))); active=max(.1,float(self.o.get('active_position_poll_seconds',.2)))
         try:
             while not stop_requested:
-                try:cid,action,d=self.q.get(timeout=.02); r=self.cameras[cid]
+                try:
+                    if self.pending_command is not None:
+                        cid,action,d=self.pending_command; self.pending_command=None
+                    else:
+                        cid,action,d=self.q.get(timeout=.02)
+                    r=self.cameras[cid]
                 except queue.Empty:r=None
                 if r:
                     if action=='ptz' and not d.get('stop'):
