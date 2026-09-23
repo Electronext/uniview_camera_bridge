@@ -66,6 +66,17 @@ class Tests(unittest.TestCase):
         c,s=self.cam([R(SERVICES)]); x=c.get_services(); self.assertEqual(x[MEDIA_NS],'http://192.168.90.113:2020/onvif/service'); self.assertEqual(x[PTZ_NS],x[MEDIA_NS])
     def test_c220_status_and_spaces(self):
         c,_=self.cam([R(SERVICES),R(PROFILES),R(OPTIONS),R(STATUS)]); self.assertIn('AbsolutePanTiltPositionSpace',c.get_ptz_configuration_options()['spaces']); p=c.get_status(); self.assertAlmostEqual(p.pan,.116173); self.assertAlmostEqual(p.tilt,.582241); self.assertEqual(p.error,'0')
+    def test_continuous_move_preserves_explicit_zero_axes(self):
+        c,s=self.cam([R(SERVICES),R(PROFILES),R(OK),R(OK)])
+        c.continuous_move(pan=.3,tilt=0,zoom=0)
+        body=s.calls[-1][1]
+        self.assertIn('<tt:PanTilt x="0.300000" y="0.000000"',body)
+        self.assertIn('<tt:Zoom x="0.000000"',body)
+        c.continuous_move(pan=.3,tilt=0,zoom=None)
+        body=s.calls[-1][1]
+        self.assertIn('<tt:PanTilt x="0.300000" y="0.000000"',body)
+        self.assertNotIn('<tt:Zoom',body)
+
     def test_stop_omits_unsupported_zoom(self):
         c,s=self.cam([R(SERVICES),R(PROFILES),R(OK)]); c.stop_move(pan_tilt=True,zoom=False); body=s.calls[-1][1]; self.assertIn('<tptz:PanTilt>true</tptz:PanTilt>',body); self.assertNotIn('<tptz:Zoom>true</tptz:Zoom>',body)
 
