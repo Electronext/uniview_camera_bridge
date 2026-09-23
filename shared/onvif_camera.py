@@ -180,7 +180,7 @@ class ONVIFCamera:
         if zoom is not None:pos.append(f'<tt:Zoom x="{max(0,min(1,float(zoom))):.9f}" space="{ZOOM_POS}"/>')
         if not pos:raise ValueError('AbsoluteMove requires a target')
         sx=f'<tptz:Speed>{"".join(speeds)}</tptz:Speed>' if speeds else ''
-        body=f'<tptz:AbsoluteMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Position>{"".join(pos)}</tptz:Position>{sx}</tptz:AbsoluteMove>'
+        body=f'<tptz:AbsoluteMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken><tptz:Position>{"".join(pos)}</tptz:Position>{sx}</tptz:AbsoluteMove>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/AbsoluteMove')
 
     def set_zoom(self,target,profile=None):self.absolute_move(zoom=target,profile=profile)
@@ -194,7 +194,7 @@ class ONVIFCamera:
         if zoom is not None:parts.append(f'<tt:Zoom x="{max(-1,min(1,float(zoom))):.9f}" space="{ZOOM_REL}"/>')
         if not parts:raise ValueError('RelativeMove requires a translation')
         sx=f'<tptz:Speed>{"".join(speeds)}</tptz:Speed>' if speeds else ''
-        body=f'<tptz:RelativeMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Translation>{"".join(parts)}</tptz:Translation>{sx}</tptz:RelativeMove>'
+        body=f'<tptz:RelativeMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken><tptz:Translation>{"".join(parts)}</tptz:Translation>{sx}</tptz:RelativeMove>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/RelativeMove')
 
     def continuous_move(self,pan=0,tilt=0,zoom=0,profile=None):
@@ -203,23 +203,23 @@ class ONVIFCamera:
         token=self._profile(profile); v=[]
         if abs(pan)>=1e-6 or abs(tilt)>=1e-6:v.append(f'<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_VEL}"/>')
         if abs(zoom)>=1e-6:v.append(f'<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VEL}"/>')
-        body=f'<tptz:ContinuousMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:Velocity>{"".join(v)}</tptz:Velocity></tptz:ContinuousMove>'
+        body=f'<tptz:ContinuousMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken><tptz:Velocity>{"".join(v)}</tptz:Velocity></tptz:ContinuousMove>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/ContinuousMove')
 
     def stop_move(self,profile=None,*,pan_tilt=True,zoom=True):
         if not pan_tilt and not zoom:return
         token=self._profile(profile); axes=('<tptz:PanTilt>true</tptz:PanTilt>' if pan_tilt else '')+('<tptz:Zoom>true</tptz:Zoom>' if zoom else '')
-        body=f'<tptz:Stop xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken>{axes}</tptz:Stop>'
+        body=f'<tptz:Stop xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken>{axes}</tptz:Stop>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/Stop')
 
     def presets(self,profile=None):
-        token=self._profile(profile); r=self.soap(self.services()[PTZ_NS],f'<tptz:GetPresets xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken></tptz:GetPresets>',PTZ_NS+'/GetPresets'); root=ET.fromstring(r.content); out=[]
+        token=self._profile(profile); r=self.soap(self.services()[PTZ_NS],f'<tptz:GetPresets xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken></tptz:GetPresets>',PTZ_NS+'/GetPresets'); root=ET.fromstring(r.content); out=[]
         for p in root.iter():
             if ln(p.tag)=='Preset':out.append({'token':p.attrib.get('token'),'name':next((e.text.strip() for e in p if ln(e.tag)=='Name' and e.text),None)})
         return out
 
     def goto_preset(self,preset,profile=None):
-        token=self._profile(profile); body=f'<tptz:GotoPreset xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PresetToken>{xml_text(preset)}</tptz:PresetToken></tptz:GotoPreset>'
+        token=self._profile(profile); body=f'<tptz:GotoPreset xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken><tptz:PresetToken>{xml_text(preset)}</tptz:PresetToken></tptz:GotoPreset>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/GotoPreset')
 
     get_services=services
