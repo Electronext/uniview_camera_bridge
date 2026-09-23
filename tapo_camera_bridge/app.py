@@ -145,7 +145,7 @@ class Bridge:
     def clear_movement(self,r):
         with r.stop_condition:
             r.movement_generation+=1
-            r.stop_again_generation=None
+            r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
             r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; r.commanded_pan=0.0; r.commanded_tilt=0.0; self.sync_moving(r)
     def safety_stop_once(self,r,expected_generation=None,expected_deadline=None,claim_time=None):
         with r.stop_condition:
@@ -275,7 +275,7 @@ class Bridge:
                         r.stop_condition.wait(.1)
                     r.movement_generation+=1
                     generation=r.movement_generation
-                    r.stop_again_generation=None
+                    r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
                     was_moving=r.moving
                     stop_pt=r.moving_pt; stop_zoom=r.moving_zoom
                     if was_moving:
