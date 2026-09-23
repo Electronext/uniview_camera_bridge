@@ -108,9 +108,23 @@ class MotionTests(unittest.TestCase):
             self.assertFalse(target_seen.wait(.05),'target overtook claimed ContinuousMove')
             primary.block.set()
             self.assertTrue(target_seen.wait(.4))
-            self.assertGreaterEqual(len(safety.calls),1,'late ContinuousMove was not stopped before target')
+            self.assertGreaterEqual(len(safety.calls),1,'continuous velocity was not stopped before target')
         finally:
             primary.block.set(); manager.shutdown()
+
+    def test_target_after_completed_velocity_still_has_stop_barrier(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        target_seen=threading.Event()
+        try:
+            manager.submit_move(2,.4,0,0); self.assertTrue(primary.seen.wait(.3))
+            for _ in range(50):
+                if manager.states[2].worker is None:break
+                time.sleep(.01)
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertTrue(target_seen.wait(.4))
+            self.assertGreaterEqual(len(safety.calls),1)
+        finally:
+            manager.shutdown()
 
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
