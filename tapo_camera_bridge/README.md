@@ -26,7 +26,7 @@ Stop payload:
 
 Pan and tilt use the ONVIF normalized `-1..1` velocity range. Continuous movement is protected by a per-camera safety watchdog. Each camera has an independent watchdog and ONVIF safety session, so a blocked command or Stop request on one camera cannot delay the safety deadline of another camera.
 
-The watchdog is deliberately independent of normal command I/O: if a `ContinuousMove` request is accepted by the camera but its HTTP response stalls or is lost, the watchdog can still issue `Stop` at the configured `ptz_safety_timeout_seconds` deadline. Failed safety Stops are retried after `ptz_stop_retry_seconds`. A new continuous movement for the same camera is serialized behind any safety Stop already in flight, preventing an older Stop from racing and cancelling the newer command.
+The watchdog is deliberately independent of normal command I/O: if a `ContinuousMove` request is accepted by the camera but its HTTP response stalls or is lost, the watchdog can still issue `Stop` at the configured `ptz_safety_timeout_seconds` deadline. Failed safety Stops are retried after `ptz_stop_retry_seconds`. Any new movement-producing command for the same camera—continuous, absolute, relative, or preset—is serialized behind a safety Stop already in flight, preventing an older Stop from racing and cancelling the newer command.
 
 The bridge also accepts absolute and relative pan/tilt JSON commands on `/absolute` and `/relative`, and publishes native ONVIF preset buttons when the camera advertises presets.
 
