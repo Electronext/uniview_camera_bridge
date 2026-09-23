@@ -130,10 +130,15 @@ class Bridge:
             return r.movement_generation
     def clear_movement(self,r):
         with r.stop_condition:
+            r.movement_generation+=1
+            r.stop_again_generation=None
             r.moving=False; r.stop_deadline=None
-    def safety_stop_once(self,r):
+    def safety_stop_once(self,r,expected_generation=None,expected_deadline=None):
         with r.stop_condition:
             if not r.moving or r.stop_in_progress:return False
+            if expected_generation is not None and r.movement_generation!=expected_generation:return False
+            if expected_deadline is not None and r.stop_deadline!=expected_deadline:return False
+            if expected_deadline is not None and time.monotonic()<expected_deadline:return False
             r.stop_in_progress=True; generation=r.movement_generation
         try:
             (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
@@ -169,8 +174,9 @@ class Bridge:
     def watchdog_once(self,r,now_mono=None):
         t=time.monotonic() if now_mono is None else now_mono
         with r.stop_condition:
-            due=r.moving and r.stop_deadline is not None and t>=r.stop_deadline and not r.stop_in_progress
-        if due:self.safety_stop_once(r)
+            if not (r.moving and r.stop_deadline is not None and t>=r.stop_deadline and not r.stop_in_progress):return False
+            generation=r.movement_generation; deadline=r.stop_deadline
+        return self.safety_stop_once(r,generation,deadline)
     def watchdog_loop(self,r):
         interval=max(.02,min(.1,float(self.o.get('ptz_watchdog_interval_seconds',.05))))
         while not self.watchdog_stop.wait(interval):self.watchdog_once(r)
@@ -190,13 +196,18 @@ class Bridge:
     def shutdown_stop_one(self,r):
         with r.stop_condition:
             moving=r.moving
+            generation=r.movement_generation
         if not moving:return
         try:
+            # Shutdown is best-effort and generation-aware: never let its late
+            # completion clear a newer movement generation.
             (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
         except Exception:
             logging.exception('%s PTZ stop failed during bridge shutdown',r.name)
         else:
-            self.clear_movement(r)
+            with r.stop_condition:
+                if r.movement_generation==generation:
+                    r.moving=False; r.stop_deadline=None; r.stop_again_generation=None
     def shutdown_stops(self):
         # Start every active camera's best-effort Stop before waiting for any
         # one HTTP request. A slow/unreachable camera therefore cannot prevent
@@ -219,6 +230,7 @@ class Bridge:
                         r.stop_condition.wait(.1)
                     r.movement_generation+=1
                     generation=r.movement_generation
+                    r.stop_again_generation=None
                     was_moving=r.moving
                     if was_moving:r.stop_deadline=time.monotonic()+float(self.o.get('ptz_transition_safety_seconds',.5))
                 try:r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
