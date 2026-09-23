@@ -492,6 +492,51 @@ class Tests(unittest.TestCase):
         finally:
             c1.stop_block.set()
 
+
+    def test_nonfinite_velocity_is_rejected_without_camera_io(self):
+        r,c=self.runtime(); b=app.Bridge({})
+        for payload in ({'pan':float('nan')},{'tilt':float('inf')},{'zoom':float('-inf')}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):b.execute(r,'ptz',payload)
+        self.assertEqual(c.calls,[]); self.assertFalse(r.moving)
+
+    def test_pt_success_reconciles_during_unrelated_zoom_stop(self):
+        r,c=self.runtime(); r.caps['zoom_continuous']=True
+        safety=FakeClient(); r.safety_client=safety
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'pan':.1,'tilt':.2,'zoom':.4})
+        c.move_block=threading.Event()
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.3}),daemon=True); worker.start()
+        for _ in range(50):
+            if len([x for x in c.calls if x[0]=='continuous_move'])>=2:break
+            time.sleep(.01)
+        with r.stop_condition:
+            r.stop_deadline_pt=time.monotonic()+10
+            r.stop_deadline_zoom=time.monotonic()-1
+            b.sync_moving(r)
+        safety.stop_block=threading.Event()
+        stopper=threading.Thread(target=lambda:b.watchdog_once(r,time.monotonic()),daemon=True); stopper.start()
+        self.assertTrue(safety.stop_seen.wait(.5))
+        c.move_block.set(); worker.join(1)
+        self.assertEqual((r.commanded_pan,r.commanded_tilt),(.3,.2))
+        self.assertTrue(r.moving_pt)
+        safety.stop_block.set(); stopper.join(1)
+
+    def test_target_replays_after_overtaking_watchdog_stop(self):
+        r,c=self.runtime(); safety=FakeClient(); r.safety_client=safety
+        b=app.Bridge({'ptz_safety_timeout_seconds':3,'ptz_transition_safety_seconds':.02})
+        b.execute(r,'ptz',{'pan':.4,'tilt':0})
+        c.target_blocks['absolute_move']=threading.Event()
+        worker=threading.Thread(target=lambda:b.execute(r,'absolute',{'pan':.2,'tilt':.3}),daemon=True); worker.start()
+        self.assertTrue(c.target_seen.setdefault('absolute_move',threading.Event()).wait(.5))
+        time.sleep(.03)
+        self.assertTrue(b.watchdog_once(r,time.monotonic()))
+        c.target_blocks['absolute_move'].set(); worker.join(1)
+        calls=[name for name,_ in c.calls]
+        self.assertEqual(calls.count('absolute_move'),2)
+        self.assertFalse(r.moving)
+
+
     def test_absolute_and_relative(self):
         r,c=self.runtime(); b=app.Bridge({}); b.execute(r,'absolute',{'pan':.2,'tilt':.58,'speed':.2}); b.execute(r,'relative',{'pan':.05,'tilt':0,'speed':.2}); self.assertEqual([x[0] for x in c.calls],['absolute_move','relative_move'])
 
