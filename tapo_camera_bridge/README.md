@@ -45,8 +45,10 @@ ContinuousMove serialization distinguishes an omitted axis from an explicit zero
 
 ### PTZ command contracts
 
-The Tapo MQTT velocity payload is a partial-axis patch: omitted axes are unchanged, while an explicit numeric zero is transmitted and requests zero velocity for that axis. Consecutive velocity messages are coalesced by merging the latest value per axis, never by discarding omitted-axis state. Explicit Stop and target commands are ordering barriers.
+The Tapo MQTT velocity payload is a partial-axis patch: omitted axes are unchanged, while an explicit numeric zero requests zero velocity for that component. Pan and tilt are serialized by ONVIF as one PanTilt vector, so the bridge retains the last successfully commanded PT vector and fills an omitted pan or tilt component from that vector. Consecutive velocity messages are also coalesced by merging the latest value per axis, never by discarding omitted-axis state. Explicit zeroes for an unsupported continuous axis are filtered before serialization; non-zero requests for an unsupported axis are rejected. Explicit Stop and target commands are ordering barriers.
 
 The shared ONVIF client uses the same unambiguous contract (None = omitted, numeric zero = serialized). The Uniview compatibility adapter intentionally translates the legacy Uniview contract (zero-valued components omitted; all-zero = Stop) before calling the shared client, so existing Uniview behavior is not changed by the Tapo semantics.
 
 Because ONVIF preset metadata does not reliably state whether zoom is encoded in a preset, the Tapo bridge resolves any tracked continuous zoom with a zoom-only Stop before issuing GotoPreset. This prevents a stale zoom watchdog from interrupting preset travel.
+
+Safety deadlines are measured from command transmission/arming, not from the HTTP response. A normal successful response therefore does not extend the watchdog interval. A fresh interval is assigned only when the same movement generation was actually stopped by the watchdog while its request was still outstanding and the late successful outcome can have restarted motion.
