@@ -47,8 +47,7 @@ class RectificationMQTTDiscovery(BaseMQTTDiscovery):
             return
         super()._on_message(client, userdata, message)
 
-    def publish_camera_event_discovery(self) -> None:
-        super().publish_camera_event_discovery()
+    def _publish_rectification_discovery(self) -> None:
         d2 = next((camera for camera in self._camera_definitions()
                    if int(camera.get("source_id", 0)) == 2 and bool(camera.get("ptz_enabled", False))), None)
         if d2 is None:
@@ -61,6 +60,12 @@ class RectificationMQTTDiscovery(BaseMQTTDiscovery):
             "payload_on": "ON", "payload_off": "OFF", "state_on": "ON", "state_off": "OFF",
             "icon": "mdi:image-auto-adjust",
         })
+
+    def publish_discovery(self) -> int:
+        before = getattr(self, "_published_config_count", 0)
+        super().publish_discovery()
+        self._publish_rectification_discovery()
+        return getattr(self, "_published_config_count", before) - before
 
 
 # Patch only ONVIF PTZ methods. Uniview LAPI, Imaging and Alarm Service remain
