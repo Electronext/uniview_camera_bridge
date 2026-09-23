@@ -19,6 +19,7 @@ def slug(v):return '_'.join(''.join(c.lower() if c.isalnum() else '_' for c in v
 @dataclass
 class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
+    safety_client:ONVIFCamera|None=None
     moving:bool=False; stop_deadline:float|None=None; next_poll:float=0; last:PTZPosition|None=None
     movement_generation:int=0; stop_in_progress:bool=False; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
 
@@ -70,7 +71,7 @@ class Bridge:
             caps={'pan_tilt_absolute':bool(spaces.get('AbsolutePanTiltPositionSpace')),'pan_tilt_relative':bool(spaces.get('RelativePanTiltTranslationSpace')),'pan_tilt_continuous':bool(spaces.get('ContinuousPanTiltVelocitySpace')),'zoom_absolute':bool(spaces.get('AbsoluteZoomPositionSpace')),'zoom_relative':bool(spaces.get('RelativeZoomTranslationSpace')),'zoom_continuous':bool(spaces.get('ContinuousZoomVelocitySpace'))}
             try:presets=client.get_presets()
             except Exception:presets=[]
-            r=CameraRuntime(cid,str(raw.get('name') or cid),client,info,caps,presets); self.cameras[cid]=r
+            r=CameraRuntime(cid,str(raw.get('name') or cid),client,info,caps,presets,safety_client=client.fork()); self.cameras[cid]=r
             logging.info('%s ONVIF PTZ capabilities: %s',r.name,json.dumps(caps,sort_keys=True))
         if not self.cameras:raise RuntimeError('No enabled Tapo cameras configured')
     def mqtt_start(self):
@@ -93,7 +94,7 @@ class Bridge:
             if not r.moving or r.stop_in_progress:return False
             r.stop_in_progress=True; generation=r.movement_generation
         try:
-            r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+            (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
         except Exception as e:
             retry=max(.1,float(self.o.get('ptz_stop_retry_seconds',.5)))
             with r.state_lock:
@@ -183,7 +184,7 @@ class Bridge:
                 with r.state_lock:moving=r.moving
                 if moving:
                     try:
-                        r.client.stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
+                        (r.safety_client or r.client).stop_move(pan_tilt=r.caps.get('pan_tilt_continuous',False),zoom=r.caps.get('zoom_continuous',False))
                     except Exception:
                         logging.exception('%s PTZ stop failed during bridge shutdown',r.name)
                     else:
