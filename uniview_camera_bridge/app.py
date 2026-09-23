@@ -598,12 +598,27 @@ def ptz_capability_flags(options_data: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def camera_ptz_is_velocity(command: dict[str, Any]) -> bool:
+    """True only for a non-zero continuous PTZ sample.
+
+    The legacy Uniview contract treats an all-zero vector exactly like Stop, so
+    zero-vector release messages must be ordering barriers too.
+    """
+    if str(command.get("action", "")) != "camera_ptz" or bool(command.get("stop", False)):
+        return False
+    try:
+        values = tuple(float(command.get(key, 0.0)) for key in ("pan", "tilt", "zoom"))
+    except (TypeError, ValueError):
+        return False
+    return all(math.isfinite(value) for value in values) and any(abs(value) >= 1e-6 for value in values)
+
+
 def coalesce_camera_ptz(first: dict[str, Any], commands: queue.Queue[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
     """Coalesce only consecutive velocity samples for one camera.
 
-    STOP, target/other actions and commands for another camera are ordering
-    barriers. The first barrier is returned to the caller instead of being put
-    back at the tail, which preserves global command order.
+    Explicit Stop, legacy all-zero Stop, target/other actions and commands for
+    another camera are ordering barriers. The first barrier is returned instead
+    of being put back at the tail, which preserves global command order.
     """
     source_id = int(first.get("source_id", 0))
     latest = first
@@ -613,11 +628,7 @@ def coalesce_camera_ptz(first: dict[str, Any], commands: queue.Queue[dict[str, A
             candidate = commands.get_nowait()
         except queue.Empty:
             return latest, None, count
-        same_velocity = (
-            str(candidate.get("action", "")) == "camera_ptz"
-            and int(candidate.get("source_id", 0)) == source_id
-            and not bool(candidate.get("stop", False))
-        )
+        same_velocity = camera_ptz_is_velocity(candidate) and int(candidate.get("source_id", 0)) == source_id
         if same_velocity:
             latest = candidate
             count += 1
@@ -1105,7 +1116,7 @@ def main() -> int:
             try:
                 event_state.expire()
                 if command:
-                    if str(command.get("action", "")) == "camera_ptz" and not bool(command.get("stop", False)):
+                    if camera_ptz_is_velocity(command):
                         source_id = int(command.get("source_id", 0))
                         command, pending_command, coalesced = coalesce_camera_ptz(command, commands)
                         if coalesced:
