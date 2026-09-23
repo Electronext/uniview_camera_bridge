@@ -10,6 +10,9 @@ class FakeMQTT:
     def __init__(self,options,commands):self.options=options; self.commands=commands; self.base='bridge'; self.configs=[]
     def _on_message(self,*args):pass
     def publish_camera_event_discovery(self):pass
+    def publish_discovery(self):
+        if self.options.get('alarm_service_enabled',True):self.publish_camera_event_discovery()
+        return len(self.configs)
     def _camera_definitions(self):return [{'source_id':2,'name':'Front PTZ','model':'x','ptz_enabled':True}]
     def _camera_config(self,*args):self.configs.append(args)
 
@@ -44,7 +47,10 @@ class Tests(unittest.TestCase):
     def test_reenable_restores_scheduled_flow(self):
         gate,calls,tmp=load_gate(); self.addCleanup(tmp.cleanup); state={'rectify_enabled':False}; gate.execute_command({'action':'rectify_enabled','enabled':True},object(),{},object(),state,object()); gate.perform_check(object(),{},object(),state,object()); self.assertEqual(calls['perform'],1)
 
+    def test_discovery_available_when_alarm_service_disabled(self):
+        gate,calls,tmp=load_gate(); self.addCleanup(tmp.cleanup); mqtt=gate.RectificationMQTTDiscovery({'alarm_service_enabled':False},object()); mqtt.publish_discovery(); self.assertTrue(mqtt.configs); self.assertEqual(mqtt.configs[-1][3]['name'],'Auto-rectification enabled')
+
     def test_discovery_name_is_auto_rectification_enabled(self):
-        gate,calls,tmp=load_gate(); self.addCleanup(tmp.cleanup); mqtt=gate.RectificationMQTTDiscovery({},object()); mqtt.publish_camera_event_discovery(); self.assertTrue(mqtt.configs); config=mqtt.configs[-1][3]; self.assertEqual(config['name'],'Auto-rectification enabled')
+        gate,calls,tmp=load_gate(); self.addCleanup(tmp.cleanup); mqtt=gate.RectificationMQTTDiscovery({},object()); mqtt.publish_discovery(); self.assertTrue(mqtt.configs); config=mqtt.configs[-1][3]; self.assertEqual(config['name'],'Auto-rectification enabled')
 
 if __name__=='__main__':unittest.main()
