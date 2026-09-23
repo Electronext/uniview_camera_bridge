@@ -83,18 +83,31 @@ class Bridge:
         if user:c.username_pw_set(user,str(self.o.get('mqtt_password','')))
         c.will_set(f'{self.base}/availability','offline',retain=True); c.on_connect=self.on_connect; c.on_message=self.on_message; self.mqtt=c
         c.connect_async(str(self.o.get('mqtt_host','core-mosquitto')),int(self.o.get('mqtt_port',1883)),60); c.loop_start()
-    def begin_target_movement(self,r):
-        # Targeted moves supersede any pending ContinuousMove watchdog. First
-        # wait behind a Stop already on the wire, then atomically retire the
-        # old continuous-movement generation/deadline before sending the new
-        # absolute/relative/preset command.
+    def target_movement(self,r,send):
+        # The replacement payload must already be validated before entering
+        # here. Serialize behind any Stop already on the wire, then retire the
+        # previous ContinuousMove generation. If the target request fails
+        # ambiguously, re-arm safety immediately: the old continuous motion may
+        # still be active and the target request may or may not have reached
+        # the camera.
         with r.stop_condition:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
             r.movement_generation+=1
+            generation=r.movement_generation
+            was_moving=r.moving
             r.moving=False
             r.stop_deadline=None
-            return r.movement_generation
+        try:
+            send()
+        except Exception:
+            if was_moving:
+                with r.stop_condition:
+                    if r.movement_generation==generation and not r.stop_in_progress:
+                        r.moving=True
+                        r.stop_deadline=time.monotonic()
+            raise
+
     def arm_movement(self,r):
         # Serialize ContinuousMove behind any Stop already in flight. Keeping
         # the check and arming under the same lock makes that ordering atomic.
@@ -192,14 +205,35 @@ class Bridge:
             r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
-            self.begin_target_movement(r)
-            r.client.absolute_move(pan=float(d['pan']),tilt=float(d['tilt']),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None),speed=(float(d['speed']) if 'speed' in d else None))
+            pan=float(d['pan']); tilt=float(d['tilt'])
+            zoom=float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_absolute') else None
+            speed=float(d['speed']) if 'speed' in d else None
+            self.target_movement(r,lambda:r.client.absolute_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed))
         elif action=='relative':
             if not r.caps.get('pan_tilt_relative'):raise RuntimeError('relative pan/tilt unsupported')
-            self.begin_target_movement(r)
-            r.client.relative_move(pan=float(d.get('pan',0)),tilt=float(d.get('tilt',0)),zoom=(float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_relative') else None),speed=(float(d['speed']) if 'speed' in d else None))
-        elif action=='preset':self.begin_target_movement(r); r.client.goto_preset(d['token'])
+            pan=float(d.get('pan',0)); tilt=float(d.get('tilt',0))
+            zoom=float(d['zoom']) if 'zoom' in d and r.caps.get('zoom_relative') else None
+            speed=float(d['speed']) if 'speed' in d else None
+            self.target_movement(r,lambda:r.client.relative_move(pan=pan,tilt=tilt,zoom=zoom,speed=speed))
+        elif action=='preset':
+            token=str(d['token'])
+            if not token:raise ValueError('preset token required')
+            self.target_movement(r,lambda:r.client.goto_preset(token))
         r.next_poll=0
+    def coalesce_ptz(self,first):
+        # Coalesce only a consecutive run of velocity PTZ commands for the
+        # same camera. Any target/Stop/other-camera command is an ordering
+        # barrier and is put back at the front of the queue.
+        latest=first
+        while True:
+            try:x=self.q.get_nowait()
+            except queue.Empty:break
+            if x[0]==first[0] and x[1]=='ptz' and not x[2].get('stop'):
+                latest=x
+                continue
+            self.q.queue.appendleft(x)
+            break
+        return latest
     def run(self):
         self.setup(); self.mqtt_start(); self.start_watchdog(); idle=max(.2,float(self.o.get('position_poll_seconds',1))); active=max(.1,float(self.o.get('active_position_poll_seconds',.2)))
         try:
@@ -207,15 +241,8 @@ class Bridge:
                 try:cid,action,d=self.q.get(timeout=.02); r=self.cameras[cid]
                 except queue.Empty:r=None
                 if r:
-                    if action=='ptz':
-                        latest=(cid,action,d); deferred=[]
-                        while True:
-                            try:x=self.q.get_nowait()
-                            except queue.Empty:break
-                            if x[0]==cid and x[1]=='ptz':latest=x
-                            else:deferred.append(x)
-                        for x in deferred:self.q.put(x)
-                        cid,action,d=latest; r=self.cameras[cid]
+                    if action=='ptz' and not d.get('stop'):
+                        cid,action,d=self.coalesce_ptz((cid,action,d)); r=self.cameras[cid]
                     try:self.execute(r,action,d)
                     except Exception as e:logging.exception('Camera command failed'); self.publish_state(r,False,str(e))
                 t=time.monotonic()
