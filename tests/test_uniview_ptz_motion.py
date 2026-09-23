@@ -126,6 +126,42 @@ class MotionTests(unittest.TestCase):
         finally:
             manager.shutdown()
 
+    def test_watchdog_expiry_preserves_queued_target(self):
+        manager,primary,safety=self.manager(timeout=.02); manager.start()
+        primary.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_move(2,.4,0,0); self.assertTrue(primary.seen.wait(.3))
+            manager.submit_target(2,lambda:target_seen.set())
+            time.sleep(.04); manager.watchdog_once(time.monotonic())
+            primary.block.set()
+            self.assertTrue(target_seen.wait(.5),'watchdog discarded queued target')
+        finally:
+            primary.block.set(); manager.shutdown()
+
+    def test_failed_target_prestop_retries_before_target(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        safety.failures=1; target_seen=threading.Event()
+        try:
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertTrue(target_seen.wait(.5))
+            self.assertGreaterEqual(len(safety.calls),2)
+        finally:
+            manager.shutdown()
+
+    def test_move_queued_during_target_barrier_is_preserved(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        safety.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertTrue(safety.seen.wait(.3))
+            primary.seen.clear(); manager.submit_move(2,.6,0,0)
+            safety.block.set()
+            self.assertTrue(target_seen.wait(.3))
+            self.assertTrue(primary.seen.wait(.4),'move queued behind target was lost')
+            self.assertEqual(primary.calls[-1][1]['pan'],.6)
+        finally:
+            safety.block.set(); manager.shutdown()
+
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
         safety.failures=1; manager.start()
