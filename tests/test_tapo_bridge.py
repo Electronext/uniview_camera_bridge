@@ -172,8 +172,8 @@ class Tests(unittest.TestCase):
         r2,c2=self.runtime(); r2.camera_id='cam2'; r2.name='Camera 2'
         b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras={'cam1':r1,'cam2':r2}
         c1.stop_block=threading.Event(); b.arm_movement(r1); b.arm_movement(r2)
-        with r1.stop_condition:r1.stop_deadline=time.monotonic()-.01
-        with r2.stop_condition:r2.stop_deadline=time.monotonic()-.01
+        with r1.stop_condition:r1.stop_deadline_pt=time.monotonic()-.01; b.sync_moving(r1)
+        with r2.stop_condition:r2.stop_deadline_pt=time.monotonic()-.01; b.sync_moving(r2)
         b.start_watchdog()
         try:
             self.assertTrue(c1.stop_seen.wait(.4),'camera 1 Stop did not start')
