@@ -130,6 +130,16 @@ class CoalescingTests(unittest.TestCase):
         self.assertTrue(barrier['stop'])
         self.assertEqual(q.get_nowait()['pan'],.9)
 
+    def test_legacy_zero_vector_release_is_ordering_barrier(self):
+        q=queue.Queue()
+        first={'action':'camera_ptz','source_id':2,'pan':.1,'tilt':0,'zoom':0}
+        q.put({'action':'camera_ptz','source_id':2,'pan':0,'tilt':0,'zoom':0})
+        q.put({'action':'camera_ptz','source_id':2,'pan':.9,'tilt':0,'zoom':0})
+        latest,barrier,count=self.app.coalesce_camera_ptz(first,q)
+        self.assertEqual(latest['pan'],.1); self.assertEqual(count,0)
+        self.assertFalse(self.app.camera_ptz_is_velocity(barrier))
+        self.assertEqual(q.get_nowait()['pan'],.9)
+
     def test_unrelated_command_is_not_reordered(self):
         q=queue.Queue()
         first={'action':'camera_ptz','source_id':2,'pan':.1}
