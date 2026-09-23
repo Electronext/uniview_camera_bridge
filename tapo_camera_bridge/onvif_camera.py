@@ -52,6 +52,21 @@ class ONVIFCamera:
         self.action_in_content_type=bool(action_in_content_type); self.nonce_encoding=nonce_encoding; self.prefer_getservices=bool(prefer_getservices)
         self.session=session or requests.Session(); self._services=None; self._profiles=None; self._configs={}
 
+    def fork(self):
+        """Return an equivalent client with an independent HTTP session.
+
+        Discovery/profile caches are copied so safety/control traffic can run
+        concurrently without sharing requests.Session state or rediscovering
+        the camera.
+        """
+        other=ONVIFCamera(self.base,self.username,self.password,self.timeout,
+            rewrite_xaddr_host=self.rewrite,action_in_content_type=self.action_in_content_type,
+            nonce_encoding=self.nonce_encoding,prefer_getservices=self.prefer_getservices)
+        other._services=dict(self._services) if self._services is not None else None
+        other._profiles=list(self._profiles) if self._profiles is not None else None
+        other._configs=dict(self._configs)
+        return other
+
     def _wsse(self):
         nonce=os.urandom(16); created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]+'Z'
         digest=hashlib.sha1(nonce+created.encode()+self.password.encode()).digest()
