@@ -81,7 +81,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(names[:2],['stop_move','continuous_move'])
         self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
 
-    def test_absolute_movement_also_waits_for_inflight_safety_stop(self):
+    def test_absolute_movement_waits_for_inflight_safety_stop(self):
         r,c=self.runtime(); b=app.Bridge({}); b.cameras[r.camera_id]=r
         with r.stop_condition:r.stop_in_progress=True
         worker=threading.Thread(target=lambda:b.execute(r,'absolute',{'pan':.2,'tilt':.3}),daemon=True); worker.start()
@@ -91,6 +91,40 @@ class Tests(unittest.TestCase):
             r.stop_in_progress=False; r.stop_condition.notify_all()
         worker.join(1)
         self.assertFalse(worker.is_alive()); self.assertEqual(c.calls[-1][0],'absolute_move')
+
+    def test_target_moves_retire_pending_continuous_deadline(self):
+        for action,payload,call_name in [
+            ('absolute',{'pan':.2,'tilt':.3},'absolute_move'),
+            ('relative',{'pan':.1,'tilt':0},'relative_move'),
+            ('preset',{'token':'1'},'goto_preset'),
+        ]:
+            with self.subTest(action=action):
+                r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+                b.execute(r,'ptz',{'pan':.4,'tilt':0})
+                old_generation=r.movement_generation
+                b.execute(r,action,payload)
+                self.assertFalse(r.moving)
+                self.assertIsNone(r.stop_deadline)
+                self.assertGreater(r.movement_generation,old_generation)
+                self.assertEqual(c.calls[-1][0],call_name)
+                before=len(c.calls); b.watchdog_once(r,time.monotonic()+10)
+                self.assertEqual(len(c.calls),before,'stale ContinuousMove watchdog fired after target move')
+
+    def test_shutdown_stops_are_dispatched_independently(self):
+        r1,c1=self.runtime(); r1.camera_id='cam1'; r1.name='Camera 1'
+        r2,c2=self.runtime(); r2.camera_id='cam2'; r2.name='Camera 2'
+        b=app.Bridge({'shutdown_stop_wait_seconds':.1}); b.cameras={'cam1':r1,'cam2':r2}
+        c1.stop_block=threading.Event(); b.arm_movement(r1); b.arm_movement(r2)
+        started=time.monotonic()
+        try:
+            b.shutdown_stops()
+            elapsed=time.monotonic()-started
+            self.assertTrue(c1.stop_seen.is_set())
+            self.assertTrue(c2.stop_seen.is_set(),'camera 2 shutdown Stop was starved by camera 1')
+            self.assertLess(elapsed,.5,'shutdown waited on a blocked camera request')
+            self.assertFalse(r2.moving)
+        finally:
+            c1.stop_block.set()
 
     def test_absolute_and_relative(self):
         r,c=self.runtime(); b=app.Bridge({}); b.execute(r,'absolute',{'pan':.2,'tilt':.58,'speed':.2}); b.execute(r,'relative',{'pan':.05,'tilt':0,'speed':.2}); self.assertEqual([x[0] for x in c.calls],['absolute_move','relative_move'])
