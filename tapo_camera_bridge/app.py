@@ -97,10 +97,13 @@ class Bridge:
             r.stop_again_generation=None
             old_pt=r.moving_pt; old_zoom=r.moving_zoom
             affected_active=(affects_pt and old_pt) or (affects_zoom and old_zoom)
-            if affected_active:
+            unaffected_active=((not affects_pt) and old_pt) or ((not affects_zoom) and old_zoom)
+            if affected_active and not unaffected_active:
                 remaining=max(0.0,(r.stop_deadline or time.monotonic())-time.monotonic())
                 r.stop_deadline=time.monotonic()+min(remaining,float(self.o.get('ptz_transition_safety_seconds',.5)))
             self.sync_moving(r)
+            if r.moving and r.stop_deadline is None:
+                r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
         try:
             send()
         except Exception:
@@ -117,18 +120,20 @@ class Bridge:
                     if not r.moving:r.stop_deadline=None
 
     def arm_movement(self,r,want_pt=True,want_zoom=False):
-        # Serialize ContinuousMove behind any Stop already in flight. Keeping
-        # the check and arming under the same lock makes that ordering atomic.
+        # Until the request outcome is known, a zero velocity cannot be trusted
+        # to have stopped a previously-active axis. Preserve prior active axes
+        # through transmission; success may retire zeroed axes afterwards.
         with r.stop_condition:
             while r.stop_in_progress:
                 r.stop_condition.wait(.1)
+            old_pt=r.moving_pt; old_zoom=r.moving_zoom
             r.movement_generation+=1
             r.stop_again_generation=None
-            r.moving_pt=bool(want_pt)
-            r.moving_zoom=bool(want_zoom)
+            r.moving_pt=bool(want_pt or old_pt)
+            r.moving_zoom=bool(want_zoom or old_zoom)
             self.sync_moving(r)
             r.stop_deadline=time.monotonic()+float(self.o.get('ptz_safety_timeout_seconds',3))
-            return r.movement_generation
+            return r.movement_generation,old_pt,old_zoom
     def clear_movement(self,r):
         with r.stop_condition:
             r.movement_generation+=1
@@ -166,7 +171,9 @@ class Bridge:
                 if stop_again:r.stop_again_generation=None
                 if r.movement_generation==generation:
                     if stop_again:
-                        r.moving=True; r.stop_deadline=time.monotonic()
+                        r.moving_pt=r.moving_pt or stop_pt
+                        r.moving_zoom=r.moving_zoom or stop_zoom
+                        self.sync_moving(r); r.stop_deadline=time.monotonic()
                     else:
                         if stop_pt:r.moving_pt=False
                         if stop_zoom:r.moving_zoom=False
@@ -248,7 +255,7 @@ class Bridge:
                     if was_moving:
                         with r.stop_condition:
                             if r.movement_generation==generation and not r.stop_in_progress:
-                                r.moving=True; r.stop_deadline=time.monotonic()
+                                self.sync_moving(r); r.stop_deadline=time.monotonic()
                     raise
                 with r.stop_condition:
                     if r.movement_generation==generation:
@@ -263,9 +270,11 @@ class Bridge:
             # Arm the safety stop before sending ContinuousMove. If the camera
             # accepts the command but its HTTP response is lost, the request
             # raises ambiguously and we must still consider it potentially moving.
-            generation=self.arm_movement(r,want_pt,want_z)
+            generation,old_pt,old_zoom=self.arm_movement(r,want_pt,want_z)
+            succeeded=False
             try:
                 r.client.continuous_move(pan=pan,tilt=tilt,zoom=zoom)
+                succeeded=True
             finally:
                 # Success and transport failure are both ambiguous with respect
                 # to camera-side ordering. If a Stop is still in flight, mark
@@ -273,10 +282,15 @@ class Bridge:
                 # Stop already completed, immediately arm the follow-up here.
                 with r.stop_condition:
                     if r.movement_generation==generation:
+                        if succeeded and not r.stop_in_progress:
+                            r.moving_pt=bool(want_pt)
+                            r.moving_zoom=bool(want_z)
+                            self.sync_moving(r)
+                            if not r.moving:r.stop_deadline=None
                         if r.stop_in_progress:
                             r.stop_again_generation=generation
-                        elif not r.moving:
-                            r.moving_pt=bool(want_pt); r.moving_zoom=bool(want_z); self.sync_moving(r)
+                        elif not r.moving and not succeeded:
+                            r.moving_pt=bool(want_pt or old_pt); r.moving_zoom=bool(want_z or old_zoom); self.sync_moving(r)
                             r.stop_deadline=time.monotonic()
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
