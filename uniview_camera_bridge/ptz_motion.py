@@ -132,40 +132,34 @@ class UniviewPTZMotionManager:
                 with state.stop_lock:
                     state.stop_done.clear()
                     try:
-                        state.safety.stop_move(pan_tilt=True, zoom=True)
-                    except Exception:
-                        logging.exception("D%d PTZ target pre-Stop failed; target deferred for retry", state.source_id)
-                        with state.lock:
-                            state.stop_required = True
-                            state.stop_retry_due = time.monotonic() + self.stop_retry
-                            # Preserve this target at the head of the queue.
-                            state.pending.insert(0, (generation, kind, payload))
-                    else:
-                        with state.lock:
-                            # Clear only state owned by this target generation;
-                            # a newer move may already have armed its own state.
-                            if state.generation == generation:
-                                state.moving = False
-                                state.deadline = None
-                                state.stop_required = False
-                                state.stop_retry_due = None
-                        try:
-                            send()
-                            barrier_ok = True
-                        except Exception:
-                            logging.exception("D%d PTZ target request failed", state.source_id)
+                        while not self._shutdown.is_set():
+                            try:
+                                state.safety.stop_move(pan_tilt=True, zoom=True)
+                                barrier_ok = True
+                                break
+                            except Exception:
+                                logging.exception("D%d PTZ target pre-Stop failed; retrying barrier", state.source_id)
+                                with state.lock:
+                                    state.stop_required = True
+                                    state.stop_retry_due = None
+                                self._shutdown.wait(self.stop_retry)
+                        if barrier_ok:
+                            with state.lock:
+                                # Clear only state owned by this target
+                                # generation. A newer move may already have
+                                # armed its own deadline while we were stopping.
+                                if state.generation == generation:
+                                    state.moving = False
+                                    state.deadline = None
+                                    state.stop_required = False
+                                    state.stop_retry_due = None
+                            try:
+                                send()
+                            except Exception:
+                                logging.exception("D%d PTZ target request failed", state.source_id)
                     finally:
                         state.stop_done.set()
-                if barrier_ok or not state.stop_required:
-                    done.set()
-                if not barrier_ok:
-                    # Failed pre-Stop is a hard barrier: leave target queued and
-                    # let the watchdog retry the Stop before this worker resumes.
-                    with state.lock:
-                        retrying = state.stop_required
-                    if retrying:
-                        state.stop_done.wait(self.stop_retry)
-                        return
+                done.set()
                 continue
             pan, tilt, zoom = payload
             try:
