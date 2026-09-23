@@ -212,12 +212,19 @@ class ONVIFCamera:
         body=f'<tptz:RelativeMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken><tptz:Translation>{"".join(parts)}</tptz:Translation>{sx}</tptz:RelativeMove>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/RelativeMove')
 
-    def continuous_move(self,pan=0,tilt=0,zoom=0,profile=None):
-        pan=max(-1,min(1,float(pan))); tilt=max(-1,min(1,float(tilt))); zoom=max(-1,min(1,float(zoom)))
-        if abs(pan)<1e-6 and abs(tilt)<1e-6 and abs(zoom)<1e-6:return self.stop_move(profile)
+    def continuous_move(self,pan=None,tilt=None,zoom=None,profile=None):
+        # None means omitted; numeric zero is an explicit zero velocity and
+        # must be serialized so it can replace an already-active component.
+        if pan is None and tilt is None and zoom is None:return self.stop_move(profile)
+        if pan is None and tilt is not None:pan=0
+        if tilt is None and pan is not None:tilt=0
         token=self._profile(profile); v=[]
-        if abs(pan)>=1e-6 or abs(tilt)>=1e-6:v.append(f'<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_VEL}"/>')
-        if abs(zoom)>=1e-6:v.append(f'<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VEL}"/>')
+        if pan is not None or tilt is not None:
+            pan=max(-1,min(1,float(pan or 0))); tilt=max(-1,min(1,float(tilt or 0)))
+            v.append(f'<tt:PanTilt x="{pan:.6f}" y="{tilt:.6f}" space="{PAN_VEL}"/>')
+        if zoom is not None:
+            zoom=max(-1,min(1,float(zoom)))
+            v.append(f'<tt:Zoom x="{zoom:.6f}" space="{ZOOM_VEL}"/>')
         body=f'<tptz:ContinuousMove xmlns:tptz="{PTZ_NS}" xmlns:tt="{TT}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken><tptz:Velocity>{"".join(v)}</tptz:Velocity></tptz:ContinuousMove>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/ContinuousMove')
 
