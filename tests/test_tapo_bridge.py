@@ -10,7 +10,7 @@ ROOT=Path(__file__).resolve().parents[1]/'tapo_camera_bridge'; sys.path.insert(0
 spec=importlib.util.spec_from_file_location('tapo_app',ROOT/'app.py'); app=importlib.util.module_from_spec(spec); sys.modules['tapo_app']=app; spec.loader.exec_module(app)
 
 class FakeClient:
-    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_block=None; self.stop_seen=threading.Event(); self.target_failures={}
+    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0; self.move_block=None; self.stop_block=None; self.stop_seen=threading.Event(); self.target_failures={}; self.target_blocks={}; self.target_seen={}
     def continuous_move(self,**kw):
         self.calls.append(('continuous_move',kw))
         if self.move_failures:
@@ -23,6 +23,8 @@ class FakeClient:
             self.stop_failures-=1; raise RuntimeError('temporary stop failure')
     def _target(self,name,value):
         self.calls.append((name,value))
+        self.target_seen.setdefault(name,threading.Event()).set()
+        if self.target_blocks.get(name):self.target_blocks[name].wait(2)
         if self.target_failures.get(name,0):
             self.target_failures[name]-=1; raise RuntimeError('ambiguous target failure')
     def absolute_move(self,**kw):self._target('absolute_move',kw)
@@ -53,6 +55,36 @@ class Tests(unittest.TestCase):
             self.assertTrue(worker.is_alive(),'ContinuousMove request should still be blocked when Stop is issued')
         finally:
             c.move_block.set(); worker.join(1); b.stop_watchdog()
+        self.assertFalse(r.moving); self.assertIsNone(r.stop_deadline)
+
+    def test_late_continuous_move_is_stopped_again(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':.05}); b.cameras[r.camera_id]=r
+        c.move_block=threading.Event(); b.start_watchdog()
+        worker=threading.Thread(target=lambda:b.execute(r,'ptz',{'pan':.4,'tilt':0}),daemon=True); worker.start()
+        try:
+            self.assertTrue(c.stop_seen.wait(.5),'initial watchdog Stop missing')
+            c.move_block.set(); worker.join(1)
+            self.assertFalse(worker.is_alive()); self.assertTrue(r.moving)
+            c.stop_seen.clear()
+            self.assertTrue(c.stop_seen.wait(.5),'late ContinuousMove was not stopped again')
+        finally:
+            c.move_block.set(); b.stop_watchdog()
+        self.assertFalse(r.moving)
+
+    def test_target_request_keeps_safety_armed_while_blocked(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3,'ptz_transition_safety_seconds':.05}); b.cameras[r.camera_id]=r
+        b.execute(r,'ptz',{'pan':.4,'tilt':0})
+        c.target_blocks['absolute_move']=threading.Event(); b.start_watchdog()
+        worker=threading.Thread(target=lambda:b.execute(r,'absolute',{'pan':.2,'tilt':.3}),daemon=True); worker.start()
+        try:
+            for _ in range(50):
+                if c.target_seen.get('absolute_move') and c.target_seen['absolute_move'].is_set():break
+                time.sleep(.01)
+            self.assertTrue(c.target_seen['absolute_move'].is_set())
+            self.assertTrue(c.stop_seen.wait(.5),'blocked target left old ContinuousMove unprotected')
+            self.assertTrue(worker.is_alive())
+        finally:
+            c.target_blocks['absolute_move'].set(); worker.join(1); b.stop_watchdog()
         self.assertFalse(r.moving); self.assertIsNone(r.stop_deadline)
 
     def test_blocked_stop_for_one_camera_does_not_starve_another(self):
@@ -154,6 +186,13 @@ class Tests(unittest.TestCase):
         latest=b.coalesce_ptz(first)
         self.assertEqual(latest[2]['pan'],.2); self.assertTrue(b.pending_command[2]['stop'])
         self.assertEqual(b.q.get_nowait()[2]['pan'],.8)
+
+    def test_failed_explicit_stop_preserves_safety_state(self):
+        r,c=self.runtime(); b=app.Bridge({}); b.execute(r,'ptz',{'pan':.4,'tilt':0}); c.stop_failures=1
+        with self.assertRaises(RuntimeError):b.execute(r,'ptz',{'stop':True})
+        self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
+        before=len(c.calls); b.watchdog_once(r,time.monotonic()+.01)
+        self.assertEqual(c.calls[before][0],'stop_move')
 
     def test_shutdown_stops_are_dispatched_independently(self):
         r1,c1=self.runtime(); r1.camera_id='cam1'; r1.name='Camera 1'
