@@ -32,6 +32,11 @@ class AdapterTests(unittest.TestCase):
             self.assertTrue(c.legacy)
             self.assertEqual(c.get_zoom(),.5)
             c.continuous_move(pan=.2,tilt=-.1)
+            self.assertEqual(c.onvif.calls[-1],("move",{"pan":.2,"tilt":-.1,"zoom":None,"profile":None}))
+            c.continuous_move(pan=0,tilt=0,zoom=.3)
+            self.assertEqual(c.onvif.calls[-1],("move",{"pan":None,"tilt":None,"zoom":.3,"profile":None}))
+            c.continuous_move()
+            self.assertEqual(c.onvif.calls[-1],("stop",{"profile":None,"pan_tilt":True,"zoom":True}))
             c.stop_move()
             self.assertEqual(c.onvif.calls[-1],("stop",{"profile":None,"pan_tilt":True,"zoom":True}))
 
