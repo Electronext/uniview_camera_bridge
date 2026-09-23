@@ -548,6 +548,12 @@ class Tests(unittest.TestCase):
             ('relative',{'pan':0,'tilt':float('nan')}),
             ('relative',{'pan':0,'tilt':0,'speed':float('inf')}),
         ]
+        # Supplied zoom must be validated even when the camera does not expose
+        # that zoom target capability.
+        cases += [
+            ('absolute',{'pan':0,'tilt':0,'zoom':float('nan')}),
+            ('relative',{'pan':0,'tilt':0,'zoom':float('inf')}),
+        ]
         for action,payload in cases:
             with self.subTest(action=action,payload=payload):
                 r,c=self.runtime(); b=app.Bridge({})
