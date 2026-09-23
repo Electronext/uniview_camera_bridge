@@ -1248,7 +1248,10 @@ def main() -> int:
                                 if not 0.0 <= position <= 1.0:
                                     raise ValueError(f"D{source_id} bridge zoom preset {requested!r} position must be 0..1")
                                 percent = position * 100.0
-                                client.set_zoom(position)
+                                if source_id in ptz_motion.states:
+                                    ptz_motion.submit_target(source_id, lambda c=client, p=position: c.set_zoom(p))
+                                else:
+                                    client.set_zoom(position)
                                 ptz_zoom_targets[source_id] = percent
                                 next_ptz_zoom_poll[source_id] = time.monotonic()
                                 logging.info("D%d bridge zoom preset %s -> %.1f%%", source_id, requested, percent)
@@ -1260,7 +1263,10 @@ def main() -> int:
                                 percent = float(command.get("percent"))
                                 if not 0.0 <= percent <= 100.0:
                                     raise ValueError(f"D{source_id} zoom percentage must be between 0 and 100, got {percent}")
-                                client.set_zoom(percent / 100.0)
+                                if source_id in ptz_motion.states:
+                                    ptz_motion.submit_target(source_id, lambda c=client, p=percent / 100.0: c.set_zoom(p))
+                                else:
+                                    client.set_zoom(percent / 100.0)
                                 # AbsoluteMove is intentionally non-blocking. The camera may
                                 # accept a newer target while still travelling; position is
                                 # observed independently by the fast active-motion poll.
