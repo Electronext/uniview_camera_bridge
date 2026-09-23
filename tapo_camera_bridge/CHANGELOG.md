@@ -5,7 +5,8 @@
 - Add direct local ONVIF camera discovery using WS-Security UsernameToken authentication.
 - Add continuous pan/tilt control and stop semantics compatible with the existing WebRTC PTZ command payload.
 - Add PTZ safety timeout and command coalescing for touch/joystick control.
-- Track continuous pan/tilt and zoom safety independently so target moves retire only the axes they actually command; watchdog/shutdown Stops are axis-specific.
+- Track continuous pan/tilt and zoom safety independently, including independent deadlines, so target moves retire only the axes they actually command and a short transition Stop can target one axis without disturbing another.
+- Preserve omitted-vs-explicit-zero ContinuousMove semantics through ONVIF serialization; zero-valued replacement axes are transmitted rather than silently omitted.
 - Enforce continuous-move safety with independent per-camera watchdogs and ONVIF safety sessions, including retryable Stops and serialization of new movement behind an in-flight safety Stop.
 - Make continuous-to-target transitions transactional: validate target payloads first, retain a bounded safety deadline while the replacement request is in flight, and immediately re-arm safety if target transmission fails ambiguously.
 - Revalidate watchdog generation and deadline atomically before claiming a safety Stop, preventing stale watchdog observations from cancelling newer movement.
