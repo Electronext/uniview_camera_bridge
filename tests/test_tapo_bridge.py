@@ -10,8 +10,11 @@ ROOT=Path(__file__).resolve().parents[1]/'tapo_camera_bridge'; sys.path.insert(0
 spec=importlib.util.spec_from_file_location('tapo_app',ROOT/'app.py'); app=importlib.util.module_from_spec(spec); sys.modules['tapo_app']=app; spec.loader.exec_module(app)
 
 class FakeClient:
-    def __init__(self):self.calls=[]; self.stop_failures=0
-    def continuous_move(self,**kw):self.calls.append(('continuous_move',kw))
+    def __init__(self):self.calls=[]; self.stop_failures=0; self.move_failures=0
+    def continuous_move(self,**kw):
+        self.calls.append(('continuous_move',kw))
+        if self.move_failures:
+            self.move_failures-=1; raise RuntimeError('ambiguous movement failure')
     def stop_move(self,**kw):
         self.calls.append(('stop_move',kw))
         if self.stop_failures:
@@ -25,6 +28,11 @@ class Tests(unittest.TestCase):
         c=FakeClient(); r=app.CameraRuntime('c220','Indoor PTZ',c,{}, {'pan_tilt_absolute':True,'pan_tilt_relative':True,'pan_tilt_continuous':True,'zoom_absolute':False,'zoom_relative':False,'zoom_continuous':False},[]); return r,c
     def test_webrtc_velocity_and_stop(self):
         r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3}); b.execute(r,'ptz',{'pan':.4,'tilt':-.2}); self.assertEqual(c.calls[0][0],'continuous_move'); b.execute(r,'ptz',{'stop':True}); self.assertEqual(c.calls[1],('stop_move',{'pan_tilt':True,'zoom':False}))
+    def test_ambiguous_continuous_move_failure_remains_armed_for_stop(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3}); c.move_failures=1
+        with self.assertRaises(RuntimeError):b.execute(r,'ptz',{'pan':.4,'tilt':0})
+        self.assertTrue(r.moving); self.assertIsNotNone(r.stop_deadline)
+
     def test_failed_safety_stop_keeps_retry_state(self):
         r,c=self.runtime(); b=app.Bridge({'ptz_stop_retry_seconds':.5}); b.cameras[r.camera_id]=r; r.moving=True; r.stop_deadline=app.time.monotonic()-1; c.stop_failures=1
         # Exercise the same failure semantics used by the run loop.
