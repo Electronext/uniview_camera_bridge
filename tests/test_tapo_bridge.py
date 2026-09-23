@@ -250,6 +250,13 @@ class Tests(unittest.TestCase):
                 b.watchdog_once(r,r.stop_deadline+.01)
                 self.assertEqual(c.calls[-1],('stop_move',expected))
 
+    def test_watchdog_injected_clock_is_used_by_stop_claim(self):
+        r,c=self.runtime(); b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'pan':.3})
+        deadline=r.stop_deadline_pt
+        self.assertTrue(b.watchdog_once(r,deadline+.01))
+        self.assertEqual(c.calls[-1],('stop_move',{'pan_tilt':True,'zoom':False}))
+
     def test_pt_transition_has_short_deadline_while_zoom_keeps_normal_deadline(self):
         r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
         b=app.Bridge({'ptz_safety_timeout_seconds':3,'ptz_transition_safety_seconds':.05})
@@ -332,6 +339,30 @@ class Tests(unittest.TestCase):
         barrier=b.pending_command; b.pending_command=None
         self.assertEqual(barrier[2]['pan'],.5)
         self.assertEqual(b.q.get_nowait()[2]['pan'],.9)
+
+    def test_ptz_coalescing_merges_partial_axes(self):
+        r,c=self.runtime(); b=app.Bridge({})
+        first=(r.camera_id,'ptz',{'zoom':0})
+        b.q.put((r.camera_id,'ptz',{'pan':.3}))
+        latest=b.coalesce_ptz(first)
+        self.assertEqual(latest[2],{'zoom':0,'pan':.3})
+
+    def test_ptz_coalescing_latest_value_wins_per_axis(self):
+        r,c=self.runtime(); b=app.Bridge({})
+        first=(r.camera_id,'ptz',{'pan':.1,'zoom':.2})
+        b.q.put((r.camera_id,'ptz',{'pan':.4}))
+        b.q.put((r.camera_id,'ptz',{'zoom':0}))
+        latest=b.coalesce_ptz(first)
+        self.assertEqual(latest[2],{'pan':.4,'zoom':0})
+
+    def test_preset_resolves_active_zoom_before_goto(self):
+        r,c=self.runtime(); r.caps.update({'zoom_continuous':True})
+        b=app.Bridge({'ptz_safety_timeout_seconds':3})
+        b.execute(r,'ptz',{'zoom':.5})
+        b.execute(r,'preset',{'token':'1'})
+        self.assertEqual([name for name,_ in c.calls],['continuous_move','stop_move','goto_preset'])
+        self.assertEqual(c.calls[1],('stop_move',{'pan_tilt':False,'zoom':True}))
+        self.assertFalse(r.moving_zoom)
 
     def test_ptz_stop_is_a_coalescing_barrier(self):
         r,c=self.runtime(); b=app.Bridge({}); first=(r.camera_id,'ptz',{'pan':.1})
