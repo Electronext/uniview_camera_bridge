@@ -26,6 +26,9 @@ WSSE_NONCE_ENCODING_LEGACY=WSSE_LEGACY
 WSSE_NONCE_ENCODING_STANDARD=WSSE_STANDARD
 
 def ln(tag:str)->str:return tag.rsplit('}',1)[-1]
+def xml_text(value)->str:return escape(str(value))
+def xml_attr(value)->str:return escape(str(value), {'"':'&quot;', "'":'&apos;'})
+
 
 def rng(el):
     out={}
@@ -52,7 +55,7 @@ class ONVIFCamera:
     def _wsse(self):
         nonce=os.urandom(16); created=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]+'Z'
         digest=hashlib.sha1(nonce+created.encode()+self.password.encode()).digest()
-        return f'''<wsse:Security s:mustUnderstand="1" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken><wsse:Username>{escape(str(self.username))}</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{base64.b64encode(digest).decode()}</wsse:Password><wsse:Nonce EncodingType="{self.nonce_encoding}">{base64.b64encode(nonce).decode()}</wsse:Nonce><wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security>'''
+        return f'''<wsse:Security s:mustUnderstand="1" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken><wsse:Username>{xml_text(self.username)}</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{base64.b64encode(digest).decode()}</wsse:Password><wsse:Nonce EncodingType="{xml_attr(self.nonce_encoding)}">{base64.b64encode(nonce).decode()}</wsse:Nonce><wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security>'''
 
     def soap(self,url,body,action):
         env=f'''<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Header>{self._wsse()}</s:Header><s:Body>{body}</s:Body></s:Envelope>'''
@@ -120,7 +123,7 @@ class ONVIFCamera:
     def ptz_options(self,profile=None):
         token=self._profile(profile); cfg=self._configs.get(token)
         if not cfg:raise RuntimeError(f'ONVIF profile {token} has no PTZConfiguration token')
-        r=self.soap(self.services()[PTZ_NS],f'<tptz:GetConfigurationOptions xmlns:tptz="{PTZ_NS}"><tptz:ConfigurationToken>{cfg}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>',PTZ_NS+'/GetConfigurationOptions')
+        r=self.soap(self.services()[PTZ_NS],f'<tptz:GetConfigurationOptions xmlns:tptz="{PTZ_NS}"><tptz:ConfigurationToken>{xml_text(cfg)}</tptz:ConfigurationToken></tptz:GetConfigurationOptions>',PTZ_NS+'/GetConfigurationOptions')
         root=ET.fromstring(r.content); spaces={}; node=next((e for e in root.iter() if ln(e.tag)=='Spaces'),None)
         if node is not None:
             for s in node:
@@ -145,7 +148,7 @@ class ONVIFCamera:
         return {'maximum_presets':maxp,'presets_supported':maxp>0,'maximum_preset_tours':maxt,'home_supported':home}
 
     def status(self,profile=None):
-        token=self._profile(profile); r=self.soap(self.services()[PTZ_NS],f'<tptz:GetStatus xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken></tptz:GetStatus>',PTZ_NS+'/GetStatus'); root=ET.fromstring(r.content)
+        token=self._profile(profile); r=self.soap(self.services()[PTZ_NS],f'<tptz:GetStatus xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{xml_text(token)}</tptz:ProfileToken></tptz:GetStatus>',PTZ_NS+'/GetStatus'); root=ET.fromstring(r.content)
         pan=tilt=zoom=None; move_pt=move_zoom=err=utc=None
         for e in root.iter():
             if ln(e.tag)=='PanTilt' and 'x' in e.attrib and 'y' in e.attrib:
@@ -216,7 +219,7 @@ class ONVIFCamera:
         return out
 
     def goto_preset(self,preset,profile=None):
-        token=self._profile(profile); body=f'<tptz:GotoPreset xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PresetToken>{preset}</tptz:PresetToken></tptz:GotoPreset>'
+        token=self._profile(profile); body=f'<tptz:GotoPreset xmlns:tptz="{PTZ_NS}"><tptz:ProfileToken>{token}</tptz:ProfileToken><tptz:PresetToken>{xml_text(preset)}</tptz:PresetToken></tptz:GotoPreset>'
         self.soap(self.services()[PTZ_NS],body,PTZ_NS+'/GotoPreset')
 
     get_services=services
