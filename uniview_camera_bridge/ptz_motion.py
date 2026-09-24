@@ -240,8 +240,14 @@ class UniviewPTZMotionManager:
                 if not due_move and not due_retry:
                     continue
                 if due_move:
-                    state.generation += 1
-                    state.pending = [item for item in state.pending if item[1] == "target"]
+                    targets = [item for item in state.pending if item[1] == "target"]
+                    # A queued target has already advanced generation beyond
+                    # the continuous move it supersedes. Preserve that target's
+                    # generation; otherwise advance generation to invalidate
+                    # the currently active move.
+                    if not targets:
+                        state.generation += 1
+                    state.pending = targets
                     state.moving = False
                     state.deadline = None
                     state.stop_required = True
