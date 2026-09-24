@@ -345,10 +345,24 @@ class Bridge:
                             self.sync_moving(r)
                             if overlap_pt or overlap_zoom:
                                 r.stop_again_generation=generation; r.stop_again_pt=overlap_pt; r.stop_again_zoom=overlap_zoom
-                        elif not r.moving:
+                        else:
+                            # A transport failure is ambiguous: the camera may
+                            # still have accepted the move. If a safety Stop is
+                            # concurrently in flight, require a second Stop for
+                            # every touched overlapping axis; otherwise arm an
+                            # immediate watchdog Stop for the possibly-active
+                            # axes.
+                            overlap_pt=bool(touch_pt and r.stop_in_progress_pt)
+                            overlap_zoom=bool(touch_zoom and r.stop_in_progress_zoom)
+                            if overlap_pt or overlap_zoom:
+                                r.stop_again_generation=generation
+                                r.stop_again_pt=overlap_pt
+                                r.stop_again_zoom=overlap_zoom
                             now_m=time.monotonic()
-                            if touch_pt:r.moving_pt=bool(want_pt or old_pt); r.stop_deadline_pt=now_m if r.moving_pt else None
-                            if touch_zoom:r.moving_zoom=bool(want_z or old_zoom); r.stop_deadline_zoom=now_m if r.moving_zoom else None
+                            if touch_pt and not overlap_pt:
+                                r.moving_pt=bool(want_pt or old_pt); r.stop_deadline_pt=now_m if r.moving_pt else None
+                            if touch_zoom and not overlap_zoom:
+                                r.moving_zoom=bool(want_z or old_zoom); r.stop_deadline_zoom=now_m if r.moving_zoom else None
                             self.sync_moving(r)
         elif action=='absolute':
             if not r.caps.get('pan_tilt_absolute'):raise RuntimeError('absolute pan/tilt unsupported')
