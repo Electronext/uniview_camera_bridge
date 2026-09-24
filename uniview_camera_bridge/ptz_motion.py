@@ -14,6 +14,7 @@ class _PTZState:
     primary: Any
     safety: Any
     generation: int = 0
+    cancel_epoch: int = 0
     moving: bool = False
     deadline: float | None = None
     pending: list[tuple[int, str, Any]] = field(default_factory=list)
@@ -102,7 +103,10 @@ class UniviewPTZMotionManager:
             # watchdog armed until the worker has issued the target's
             # pre-Stop. This avoids an unbounded interval if a claimed
             # ContinuousMove is still blocked.
-            state.pending.append((generation, "target", (send, done)))
+            # Target validity is tied only to explicit cancellation, not to
+            # the movement generation. Later velocity work must remain ordered
+            # after this target rather than silently cancelling it.
+            state.pending.append((generation, "target", (send, done, state.cancel_epoch)))
             self._ensure_worker_locked(state)
         return done
 
@@ -124,7 +128,7 @@ class UniviewPTZMotionManager:
                 if kind == "move" and not state.moving and not state.pending:
                     continue
             if kind == "target":
-                send, done = payload
+                send, done, cancel_epoch = payload
                 # Establish a hard Stop barrier before an absolute/preset
                 # target. Hold stop_lock across Stop -> target so an already
                 # claimed watchdog Stop cannot land after the target.
@@ -148,10 +152,13 @@ class UniviewPTZMotionManager:
                                 # Revalidate while still holding stop_lock. An
                                 # explicit/watchdog Stop may have superseded
                                 # this target while its pre-Stop was blocked.
-                                current = state.generation == generation
+                                current = state.cancel_epoch == cancel_epoch
                                 if current:
-                                    state.moving = False
-                                    state.deadline = None
+                                    # Do not clear movement/deadline belonging
+                                    # to velocity work queued after this target.
+                                    if state.generation == generation:
+                                        state.moving = False
+                                        state.deadline = None
                                     state.stop_required = False
                                     state.stop_retry_due = None
                             if current:
@@ -180,22 +187,27 @@ class UniviewPTZMotionManager:
                     self._send_followup_stop(state)
 
     def _send_followup_stop(self, state: _PTZState) -> None:
+        """Keep the per-camera worker behind the Stop barrier until resolved."""
         with state.stop_lock:
             state.stop_done.clear()
             try:
-                state.safety.stop_move(pan_tilt=True, zoom=True)
-            except Exception:
-                logging.exception("D%d PTZ follow-up Stop failed; scheduling retry", state.source_id)
-                with state.lock:
-                    state.stop_required = True
-                    state.stop_retry_due = time.monotonic() + self.stop_retry
-            else:
-                with state.lock:
-                    # Do not clear a newer movement generation. The follow-up
-                    # Stop is ordered before that movement because the primary
-                    # worker is still inside this method.
-                    state.stop_required = False
-                    state.stop_retry_due = None
+                while not self._shutdown.is_set():
+                    try:
+                        state.safety.stop_move(pan_tilt=True, zoom=True)
+                    except Exception:
+                        logging.exception("D%d PTZ follow-up Stop failed; retrying barrier", state.source_id)
+                        with state.lock:
+                            state.stop_required = True
+                            state.stop_retry_due = None
+                        self._shutdown.wait(self.stop_retry)
+                        continue
+                    with state.lock:
+                        # Later queued movement remains valid, but cannot be
+                        # transmitted until this ambiguous predecessor has been
+                        # conclusively stopped.
+                        state.stop_required = False
+                        state.stop_retry_due = None
+                    return
             finally:
                 state.stop_done.set()
 
@@ -203,6 +215,7 @@ class UniviewPTZMotionManager:
         state = self.states[source_id]
         with state.lock:
             state.generation += 1
+            state.cancel_epoch += 1
             generation = state.generation
             state.pending.clear()
             state.moving = False
@@ -240,14 +253,12 @@ class UniviewPTZMotionManager:
                 if not due_move and not due_retry:
                     continue
                 if due_move:
-                    targets = [item for item in state.pending if item[1] == "target"]
-                    # A queued target has already advanced generation beyond
-                    # the continuous move it supersedes. Preserve that target's
-                    # generation; otherwise advance generation to invalidate
-                    # the currently active move.
-                    if not targets:
-                        state.generation += 1
-                    state.pending = targets
+                    # Drop replaceable queued velocity samples, but preserve
+                    # ordered target barriers. Target cancellation is governed
+                    # exclusively by cancel_epoch (explicit Stop/shutdown), so
+                    # watchdog generation changes cannot invalidate a target.
+                    state.generation += 1
+                    state.pending = [item for item in state.pending if item[1] == "target"]
                     state.moving = False
                     state.deadline = None
                     state.stop_required = True
