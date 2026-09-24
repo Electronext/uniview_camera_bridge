@@ -145,18 +145,22 @@ class UniviewPTZMotionManager:
                                 self._shutdown.wait(self.stop_retry)
                         if barrier_ok:
                             with state.lock:
-                                # Clear only state owned by this target
-                                # generation. A newer move may already have
-                                # armed its own deadline while we were stopping.
-                                if state.generation == generation:
+                                # Revalidate while still holding stop_lock. An
+                                # explicit/watchdog Stop may have superseded
+                                # this target while its pre-Stop was blocked.
+                                current = state.generation == generation
+                                if current:
                                     state.moving = False
                                     state.deadline = None
                                     state.stop_required = False
                                     state.stop_retry_due = None
-                            try:
-                                send()
-                            except Exception:
-                                logging.exception("D%d PTZ target request failed", state.source_id)
+                            if current:
+                                try:
+                                    send()
+                                except Exception:
+                                    logging.exception("D%d PTZ target request failed", state.source_id)
+                            else:
+                                logging.debug("D%d PTZ target cancelled by newer generation", state.source_id)
                     finally:
                         state.stop_done.set()
                 done.set()
@@ -242,8 +246,12 @@ class UniviewPTZMotionManager:
                     state.deadline = None
                     state.stop_required = True
                 generation = state.generation
-                # Claim the retry so another watchdog tick cannot duplicate it.
+                # Claim ordering synchronously, before spawning the HTTP Stop
+                # thread. Targets wait on stop_done, closing the claim-to-lock
+                # scheduling gap that could otherwise produce target -> stale
+                # watchdog Stop on the wire.
                 state.stop_retry_due = None
+                state.stop_done.clear()
                 claims.append((state, generation))
         for state, generation in claims:
             threading.Thread(
