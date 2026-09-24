@@ -21,6 +21,8 @@ class _PTZState:
     worker: threading.Thread | None = None
     stop_required: bool = False
     stop_retry_due: float | None = None
+    stop_claim: int = 0
+    stop_completed: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     stop_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     stop_done: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -137,6 +139,9 @@ class UniviewPTZMotionManager:
                     state.stop_done.clear()
                     try:
                         while not self._shutdown.is_set():
+                            with state.lock:
+                                if state.cancel_epoch != cancel_epoch:
+                                    break
                             try:
                                 state.safety.stop_move(pan_tilt=True, zoom=True)
                                 barrier_ok = True
@@ -146,16 +151,20 @@ class UniviewPTZMotionManager:
                                 with state.lock:
                                     state.stop_required = True
                                     state.stop_retry_due = None
+                                    if state.cancel_epoch != cancel_epoch:
+                                        break
                                 self._shutdown.wait(self.stop_retry)
                         if barrier_ok:
                             with state.lock:
-                                # Revalidate while still holding stop_lock. An
-                                # explicit/watchdog Stop may have superseded
-                                # this target while its pre-Stop was blocked.
+                                # Revalidate explicit cancellation while still
+                                # holding stop_lock. A watchdog claim raised
+                                # during this barrier is already satisfied by
+                                # the successful pre-Stop, so consume it here;
+                                # its later thread must become a no-op rather
+                                # than landing after the target.
                                 current = state.cancel_epoch == cancel_epoch
                                 if current:
-                                    # Do not clear movement/deadline belonging
-                                    # to velocity work queued after this target.
+                                    state.stop_completed = max(state.stop_completed, state.stop_claim)
                                     if state.generation == generation:
                                         state.moving = False
                                         state.deadline = None
@@ -224,8 +233,13 @@ class UniviewPTZMotionManager:
             state.stop_retry_due = time.monotonic()
         return self._attempt_stop(state, generation)
 
-    def _attempt_stop(self, state: _PTZState, expected_generation: int) -> bool:
+    def _attempt_stop(self, state: _PTZState, expected_generation: int, claim: int | None = None) -> bool:
         with state.stop_lock:
+            if claim is not None:
+                with state.lock:
+                    if claim <= state.stop_completed:
+                        state.stop_done.set()
+                        return True
             state.stop_done.clear()
             try:
                 state.safety.stop_move(pan_tilt=True, zoom=True)
@@ -238,6 +252,8 @@ class UniviewPTZMotionManager:
             finally:
                 state.stop_done.set()
         with state.lock:
+            if claim is not None:
+                state.stop_completed = max(state.stop_completed, claim)
             if state.generation == expected_generation:
                 state.stop_required = False
                 state.stop_retry_due = None
@@ -268,12 +284,14 @@ class UniviewPTZMotionManager:
                 # scheduling gap that could otherwise produce target -> stale
                 # watchdog Stop on the wire.
                 state.stop_retry_due = None
+                state.stop_claim += 1
+                claim = state.stop_claim
                 state.stop_done.clear()
-                claims.append((state, generation))
-        for state, generation in claims:
+                claims.append((state, generation, claim))
+        for state, generation, claim in claims:
             threading.Thread(
                 target=self._attempt_stop,
-                args=(state, generation),
+                args=(state, generation, claim),
                 name=f"uniview-ptz-watchdog-D{state.source_id}",
                 daemon=True,
             ).start()
