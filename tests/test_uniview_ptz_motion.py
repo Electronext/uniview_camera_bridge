@@ -240,6 +240,35 @@ class MotionTests(unittest.TestCase):
         finally:
             primary.block.set(); manager.shutdown()
 
+    def test_cancelled_target_breaks_prestop_retry_loop(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        safety.failures=100; target_seen=threading.Event()
+        manager.submit_target(2,lambda:target_seen.set())
+        time.sleep(.03)
+        stopper=threading.Thread(target=lambda:manager.stop(2),daemon=True); stopper.start()
+        stopper.join(.6)
+        self.assertFalse(stopper.is_alive(),'explicit Stop remained blocked behind cancelled target retries')
+        self.assertFalse(target_seen.is_set())
+
+    def test_watchdog_claim_during_target_barrier_is_consumed_before_send(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        safety.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertTrue(safety.seen.wait(.3))
+            manager.submit_move(2,.8,0,0)
+            with manager.states[2].lock:
+                due=manager.states[2].deadline
+            manager.watchdog_once(due + .001)
+            safety.block.set()
+            self.assertTrue(target_seen.wait(.5))
+            time.sleep(.05)
+            # One pre-Stop satisfies the watchdog claim; no stale claimed Stop
+            # may land after the target.
+            self.assertEqual(len(safety.calls),1)
+        finally:
+            safety.block.set(); manager.shutdown()
+
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
         safety.failures=1; manager.start()
