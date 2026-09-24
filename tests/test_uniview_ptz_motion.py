@@ -162,6 +162,36 @@ class MotionTests(unittest.TestCase):
         finally:
             safety.block.set(); manager.shutdown()
 
+    def test_explicit_stop_cancels_claimed_target_before_send(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        safety.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertTrue(safety.seen.wait(.3),'target pre-Stop did not start')
+            stopper=threading.Thread(target=lambda:manager.stop(2),daemon=True); stopper.start()
+            for _ in range(50):
+                if manager.states[2].generation>=2:break
+                time.sleep(.01)
+            safety.block.set(); stopper.join(1)
+            self.assertFalse(target_seen.is_set(),'explicit Stop did not cancel claimed target')
+        finally:
+            safety.block.set(); manager.shutdown()
+
+    def test_watchdog_claim_blocks_target_before_stop_thread_runs(self):
+        manager,primary,safety=self.manager(timeout=.02); manager.start()
+        safety.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_move(2,.4,0,0)
+            time.sleep(.03)
+            manager.watchdog_once(time.monotonic())
+            self.assertFalse(manager.states[2].stop_done.is_set(),'watchdog claim did not synchronously close ordering gate')
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertFalse(target_seen.wait(.05),'target overtook claimed watchdog Stop')
+            safety.block.set()
+            self.assertTrue(target_seen.wait(.5))
+        finally:
+            safety.block.set(); manager.shutdown()
+
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
         safety.failures=1; manager.start()
