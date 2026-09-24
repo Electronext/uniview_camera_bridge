@@ -182,8 +182,9 @@ class MotionTests(unittest.TestCase):
         safety.block=threading.Event(); target_seen=threading.Event()
         try:
             manager.submit_move(2,.4,0,0)
-            time.sleep(.03)
-            manager.watchdog_once(time.monotonic())
+            with manager.states[2].lock:
+                due=manager.states[2].deadline
+            manager.watchdog_once(due + .001)
             self.assertFalse(manager.states[2].stop_done.is_set(),'watchdog claim did not synchronously close ordering gate')
             manager.submit_target(2,lambda:target_seen.set())
             self.assertFalse(target_seen.wait(.05),'target overtook claimed watchdog Stop')
@@ -191,6 +192,53 @@ class MotionTests(unittest.TestCase):
             self.assertTrue(target_seen.wait(.5))
         finally:
             safety.block.set(); manager.shutdown()
+
+    def test_later_move_does_not_cancel_claimed_target(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        safety.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_target(2,lambda:target_seen.set())
+            self.assertTrue(safety.seen.wait(.3))
+            primary.seen.clear(); manager.submit_move(2,.7,0,0)
+            safety.block.set()
+            self.assertTrue(target_seen.wait(.4),'later move cancelled ordered target')
+            self.assertTrue(primary.seen.wait(.4),'later move was not sent after target')
+        finally:
+            safety.block.set(); manager.shutdown()
+
+    def test_failed_followup_stop_blocks_later_move_until_retry_succeeds(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        primary.block=threading.Event()
+        try:
+            manager.submit_move(2,.4,0,0); self.assertTrue(primary.seen.wait(.3))
+            manager.stop(2)
+            safety.failures=1
+            primary.seen.clear(); manager.submit_move(2,-.4,0,0)
+            primary.block.set()
+            time.sleep(.05)
+            self.assertFalse(primary.seen.is_set(),'later move overtook failed follow-up Stop')
+            for _ in range(60):
+                if primary.seen.is_set():break
+                time.sleep(.01)
+            self.assertTrue(primary.seen.is_set(),'later move did not resume after follow-up Stop retry')
+        finally:
+            primary.block.set(); manager.shutdown()
+
+    def test_watchdog_drops_newer_velocity_but_preserves_target_validity(self):
+        manager,primary,safety=self.manager(timeout=1); manager.start()
+        primary.block=threading.Event(); target_seen=threading.Event()
+        try:
+            manager.submit_move(2,.2,0,0); self.assertTrue(primary.seen.wait(.3))
+            manager.submit_target(2,lambda:target_seen.set())
+            manager.submit_move(2,.8,0,0)
+            with manager.states[2].lock:
+                due=manager.states[2].deadline
+            manager.watchdog_once(due + .001)
+            primary.block.set()
+            self.assertTrue(target_seen.wait(.5),'watchdog invalidated preserved target')
+            self.assertEqual(len(primary.calls),1,'expired newer velocity should have been discarded')
+        finally:
+            primary.block.set(); manager.shutdown()
 
     def test_watchdog_stop_retries_after_failure(self):
         manager,primary,safety=self.manager(timeout=.02)
