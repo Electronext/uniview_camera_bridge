@@ -45,11 +45,11 @@ class PTZPosition:
     error:str|None=None; utc_time:str|None=None
 
 class ONVIFCamera:
-    def __init__(self,host,username,password,timeout=15.0,*,rewrite_xaddr_host=True,action_in_content_type=True,nonce_encoding=WSSE_LEGACY,nonce_bytes=16,envelope_namespaces=None,prefer_getservices=True,session=None):
+    def __init__(self,host,username,password,timeout=15.0,*,rewrite_xaddr_host=True,action_in_content_type=True,nonce_encoding=WSSE_LEGACY,nonce_bytes=16,prefer_getservices=True,session=None):
         if not host.startswith(('http://','https://')):host='http://'+host
         self.base=host.rstrip('/'); self.username=username; self.password=password
         self.timeout=float(timeout); self.rewrite=bool(rewrite_xaddr_host)
-        self.action_in_content_type=bool(action_in_content_type); self.nonce_encoding=nonce_encoding; self.nonce_bytes=int(nonce_bytes); self.envelope_namespaces=envelope_namespaces or ''; self.prefer_getservices=bool(prefer_getservices)
+        self.action_in_content_type=bool(action_in_content_type); self.nonce_encoding=nonce_encoding; self.nonce_bytes=int(nonce_bytes); self.prefer_getservices=bool(prefer_getservices)
         self.session=session or requests.Session(); self._services=None; self._profiles=None; self._configs={}; self._device_url=None
 
     def fork(self):
@@ -74,9 +74,19 @@ class ONVIFCamera:
         return f'''<wsse:Security s:mustUnderstand="1" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken><wsse:Username>{xml_text(self.username)}</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{base64.b64encode(digest).decode()}</wsse:Password><wsse:Nonce EncodingType="{xml_attr(self.nonce_encoding)}">{base64.b64encode(nonce).decode()}</wsse:Nonce><wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security>'''
 
     def soap(self,url,body,action):
-        env=f'''<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{self.envelope_namespaces}><s:Header>{self._wsse()}</s:Header><s:Body>{body}</s:Body></s:Envelope>'''
+        env=f'''<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Header>{self._wsse()}</s:Header><s:Body>{body}</s:Body></s:Envelope>'''
         ct='application/soap+xml; charset=utf-8'+(f'; action="{action}"' if self.action_in_content_type else '')
-        r=self.session.post(url,data=env.encode(),headers={'Content-Type':ct},timeout=self.timeout); r.raise_for_status(); return r
+        r=self.session.post(url,data=env.encode(),headers={'Content-Type':ct},timeout=self.timeout)
+        try:r.raise_for_status()
+        except requests.HTTPError:
+            fault=''
+            try:
+                root=ET.fromstring(r.content)
+                vals=[(el.text or '').strip() for el in root.iter() if ln(el.tag) in ('Value','Text') and (el.text or '').strip()]
+                if vals:fault='; SOAP fault: '+' — '.join(vals[-2:])
+            except ET.ParseError:pass
+            raise requests.HTTPError(f'{r.status_code} Client Error for url: {url}{fault}',response=r)
+        return r
 
     def _norm(self,url):
         if not url:return None
