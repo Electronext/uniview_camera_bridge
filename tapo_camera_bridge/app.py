@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import paho.mqtt.client as mqtt
-from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD, MEDIA_NS, PTZ_NS
+from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
 
-VERSION='0.1.0b9'; stop_requested=False
+VERSION='0.1.0b10'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -69,33 +69,8 @@ class Bridge:
             if not isinstance(raw,dict) or not raw.get('enabled',True):continue
             cid=slug(str(raw.get('id') or raw.get('name') or 'camera')); host=str(raw.get('host','')).strip(); user=str(raw.get('username','')).strip(); password=str(raw.get('password',''))
             if not host or not user or not password:raise RuntimeError(f'{cid}: host/username/password required')
-            client=ONVIFCamera(host,user,password,float(self.o.get('request_timeout_seconds',15)),rewrite_xaddr_host=True,action_in_content_type=False,nonce_encoding=WSSE_NONCE_ENCODING_STANDARD,nonce_bytes=20,
-                envelope_namespaces=' xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" xmlns:tev="http://www.onvif.org/ver10/events/wsdl" xmlns:tan="http://www.onvif.org/ver20/analytics/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema"')
-            # The C220's common ONVIF endpoint supports Media/PTZ but rejects
-            # GetDeviceInformation with HTTP 400. Device information is optional
-            # for bridge operation, so do not make it a startup prerequisite.
-            try:
-                info=client.get_device_information()
-            except Exception as e:
-                logging.info('%s ONVIF GetDeviceInformation unavailable (%s); continuing with Media/PTZ discovery',cid,e)
-                info={'manufacturer':'TP-Link','model':str(raw.get('model') or 'Tapo ONVIF camera')}
-            # The C220 advertises service XAddrs such as /onvif/service via
-            # GetServices, but the proven probe sends Media/PTZ operations to
-            # that common endpoint directly. Pin those namespaces accordingly
-            # instead of trusting the advertised XAddr routing.
-            common=client.base+'/onvif/service'
-            client._services={MEDIA_NS:common,PTZ_NS:common}
-            # Diagnostic beta: prove the exact probe-style GetProfiles request before
-            # entering generic discovery. The original probe sends this operation
-            # directly to /onvif/service.
-            try:
-                probe_r=client.soap(common,'<trt:GetProfiles/>',MEDIA_NS+'/GetProfiles')
-                logging.info('%s probe-style GetProfiles succeeded: HTTP %s, %s bytes',cid,probe_r.status_code,len(probe_r.content))
-            except Exception as e:
-                response=getattr(e,'response',None)
-                body=(getattr(response,'text','') or '').replace('\n',' ').strip()
-                logging.error('%s probe-style GetProfiles failed: %s; response=%s',cid,e,body[:4000])
-                raise
+            client=ONVIFCamera(host,user,password,float(self.o.get('request_timeout_seconds',15)),rewrite_xaddr_host=True,action_in_content_type=False,nonce_encoding=WSSE_NONCE_ENCODING_STANDARD,nonce_bytes=20)
+            info=client.get_device_information()
             spaces=(client.get_ptz_configuration_options().get('spaces') or {})
             caps={'pan_tilt_absolute':bool(spaces.get('AbsolutePanTiltPositionSpace')),'pan_tilt_relative':bool(spaces.get('RelativePanTiltTranslationSpace')),'pan_tilt_continuous':bool(spaces.get('ContinuousPanTiltVelocitySpace')),'zoom_absolute':bool(spaces.get('AbsoluteZoomPositionSpace')),'zoom_relative':bool(spaces.get('RelativeZoomTranslationSpace')),'zoom_continuous':bool(spaces.get('ContinuousZoomVelocitySpace'))}
             try:presets=client.get_presets()
