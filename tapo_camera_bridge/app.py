@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_LEGACY
 
-VERSION='0.1.0b3'; stop_requested=False
+VERSION='0.1.0b4'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
