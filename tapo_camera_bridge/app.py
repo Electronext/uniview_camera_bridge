@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
 
-VERSION='0.1.0b13'; stop_requested=False
+VERSION='0.1.0b14'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -59,7 +59,7 @@ class Bridge:
         if len(parts)!=2:return
         cid,action=parts; payload=m.payload.decode(errors='replace')
         if cid not in self.cameras:return
-        if action in ('ptz','absolute','relative'):
+        if action in ('ptz','absolute','relative','ptz_test'):
             try:data=json.loads(payload); assert isinstance(data,dict)
             except Exception:logging.warning('Ignoring invalid %s payload %r',action,payload); return
             if action=='ptz':logging.debug('%s PTZ MQTT input: %s',cid,json.dumps(data,separators=(',',':'),sort_keys=True))
@@ -269,7 +269,37 @@ class Bridge:
                     if stop_zoom:r.moving_zoom=False; r.stop_deadline_zoom=None
                     self.sync_moving(r)
 
+    def ptz_test(self,r,d):
+        # Controlled hardware diagnostic: one axis at a time, with GetStatus
+        # before/after and an unconditional Stop after ContinuousMove.
+        mode=str(d.get('mode','')).strip().lower()
+        axis=str(d.get('axis','')).strip().lower()
+        value=float(d.get('value',0))
+        if mode not in ('continuous','relative'):raise ValueError('ptz_test mode must be continuous or relative')
+        if axis not in ('pan','tilt'):raise ValueError('ptz_test axis must be pan or tilt')
+        if not math.isfinite(value) or abs(value)<1e-6:raise ValueError('ptz_test value must be finite and non-zero')
+        value=max(-1,min(1,value))
+        before=r.client.get_status()
+        logging.info('%s PTZ TEST %s %s=%+.3f before: pan=%s tilt=%s',r.camera_id,mode,axis,value,before.pan,before.tilt)
+        pan=value if axis=='pan' else 0.0; tilt=value if axis=='tilt' else 0.0
+        if mode=='continuous':
+            duration=max(.05,min(1.0,float(d.get('duration',.25))))
+            r.client.continuous_move(pan=pan,tilt=tilt)
+            try:time.sleep(duration)
+            finally:r.client.stop_move(pan_tilt=True,zoom=False)
+        else:
+            speed=d.get('speed')
+            speed=None if speed is None else max(0,min(1,float(speed)))
+            r.client.relative_move(pan=pan,tilt=tilt,speed=speed)
+            # Give the target move time to settle before sampling its result.
+            time.sleep(max(.1,min(2.0,float(d.get('settle',.5)))))
+        after=r.client.get_status(); r.last=after
+        logging.info('%s PTZ TEST %s %s=%+.3f after: pan=%s tilt=%s delta_pan=%s delta_tilt=%s',r.camera_id,mode,axis,value,after.pan,after.tilt,None if before.pan is None or after.pan is None else after.pan-before.pan,None if before.tilt is None or after.tilt is None else after.tilt-before.tilt)
+        self.publish_state(r)
+        return
+
     def execute(self,r,action,d):
+        if action=='ptz_test':return self.ptz_test(r,d)
         if action=='ptz':
             if d.get('stop'):
                 logging.debug('%s PTZ explicit Stop input',r.camera_id)
