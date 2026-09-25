@@ -61,7 +61,7 @@ class ONVIFCamera:
         """
         other=ONVIFCamera(self.base,self.username,self.password,self.timeout,
             rewrite_xaddr_host=self.rewrite,action_in_content_type=self.action_in_content_type,
-            nonce_encoding=self.nonce_encoding,nonce_bytes=self.nonce_bytes,envelope_namespaces=self.envelope_namespaces,prefer_getservices=self.prefer_getservices)
+            nonce_encoding=self.nonce_encoding,nonce_bytes=self.nonce_bytes,prefer_getservices=self.prefer_getservices)
         other._services=dict(self._services) if self._services is not None else None
         other._profiles=list(self._profiles) if self._profiles is not None else None
         other._configs=dict(self._configs)
