@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
 
-VERSION='0.1.0b12'; stop_requested=False
+VERSION='0.1.0b13'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -296,6 +296,11 @@ class Bridge:
                 with r.stop_condition:
                     if r.movement_generation==generation:
                         r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; r.commanded_pan=0.0; r.commanded_tilt=0.0; self.sync_moving(r)
+                try:
+                    r.last=r.client.get_status()
+                    logging.debug('%s PTZ final: pan=%s tilt=%s zoom=%s',r.camera_id,r.last.pan,r.last.tilt,r.last.zoom)
+                except Exception as e:
+                    logging.debug('%s PTZ final status read failed: %s',r.camera_id,e)
                 return
             supplied_pt=('pan' in d or 'tilt' in d); supplied_zoom=('zoom' in d)
             pt_supported=bool(r.caps.get('pan_tilt_continuous')); zoom_supported=bool(r.caps.get('zoom_continuous'))
@@ -429,7 +434,12 @@ class Bridge:
                 t=time.monotonic()
                 for r in self.cameras.values():
                     if t>=r.next_poll:
-                        try:r.last=r.client.get_status(); self.publish_state(r); r.next_poll=t+(active if r.moving else idle)
+                        try:
+                            was_moving=r.moving
+                            r.last=r.client.get_status()
+                            if was_moving:
+                                logging.debug('%s PTZ status: pan=%s tilt=%s zoom=%s moving=%s',r.camera_id,r.last.pan,r.last.tilt,r.last.zoom,r.moving)
+                            self.publish_state(r); r.next_poll=t+(active if r.moving else idle)
                         except Exception as e:logging.debug('%s status poll failed: %s',r.name,e); self.publish_state(r,False,str(e)); r.next_poll=t+idle
         finally:
             self.stop_watchdog()
@@ -439,5 +449,9 @@ class Bridge:
             if self.mqtt:self.pub(f'{self.base}/availability','offline',True); self.mqtt.disconnect(); self.mqtt.loop_stop()
 
 def main():
+    # urllib3's connection-pool DEBUG output obscures the PTZ diagnostics on
+    # cameras such as the C220 which close their HTTP connection after each
+    # request. Keep our own DEBUG logging while silencing that transport chatter.
+    logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
     opts=json.loads(open('/data/options.json',encoding='utf-8').read()); logging.basicConfig(level=getattr(logging,str(opts.get('log_level','INFO')).upper(),logging.INFO),format='%(asctime)s %(levelname)s: %(message)s'); logging.info("="*72); logging.info("TAPO CAMERA BRIDGE STARTING - version %s",VERSION); logging.info("="*72); Bridge(opts).run()
 if __name__=='__main__':main()
