@@ -62,6 +62,26 @@ class Tests(unittest.TestCase):
         c.get_ptz_configuration_options()
         self.assertIn('<tptz:ConfigurationToken>cfg&amp;&lt;2&gt;</tptz:ConfigurationToken>',s.calls[-1][1])
 
+    def test_device_service_falls_back_to_common_service_endpoint(self):
+        c,s=self.cam([R('<fault/>',400),R(SERVICES)])
+        x=c.get_services()
+        self.assertEqual(s.calls[0][0],'http://192.168.90.113:2020/onvif/device_service')
+        self.assertEqual(s.calls[1][0],'http://192.168.90.113:2020/onvif/service')
+        self.assertEqual(x[PTZ_NS],'http://192.168.90.113:2020/onvif/service')
+        self.assertEqual(c._device_url,'http://192.168.90.113:2020/onvif/service')
+
+    def test_device_information_reuses_discovered_common_endpoint(self):
+        info='''<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl"><s:Body><tds:GetDeviceInformationResponse><tds:Manufacturer>TP-Link</tds:Manufacturer><tds:Model>C220</tds:Model></tds:GetDeviceInformationResponse></s:Body></s:Envelope>'''
+        c,s=self.cam([R('<fault/>',400),R(info),R(info)])
+        first=c.get_device_information()
+        second=c.get_device_information()
+        self.assertEqual(first['model'],'C220'); self.assertEqual(second['manufacturer'],'TP-Link')
+        self.assertEqual([x[0] for x in s.calls],[
+            'http://192.168.90.113:2020/onvif/device_service',
+            'http://192.168.90.113:2020/onvif/service',
+            'http://192.168.90.113:2020/onvif/service',
+        ])
+
     def test_shared_service_endpoint(self):
         c,s=self.cam([R(SERVICES)]); x=c.get_services(); self.assertEqual(x[MEDIA_NS],'http://192.168.90.113:2020/onvif/service'); self.assertEqual(x[PTZ_NS],x[MEDIA_NS])
     def test_c220_status_and_spaces(self):
