@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import paho.mqtt.client as mqtt
-from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
+from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD, MEDIA_NS, PTZ_NS
 
-VERSION='0.1.0b6'; stop_requested=False
+VERSION='0.1.0b7'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -78,6 +78,12 @@ class Bridge:
             except Exception as e:
                 logging.info('%s ONVIF GetDeviceInformation unavailable (%s); continuing with Media/PTZ discovery',cid,e)
                 info={'manufacturer':'TP-Link','model':str(raw.get('model') or 'Tapo ONVIF camera')}
+            # The C220 advertises service XAddrs such as /onvif/service via
+            # GetServices, but the proven probe sends Media/PTZ operations to
+            # that common endpoint directly. Pin those namespaces accordingly
+            # instead of trusting the advertised XAddr routing.
+            common=client.base+'/onvif/service'
+            client._services={MEDIA_NS:common,PTZ_NS:common}
             spaces=(client.get_ptz_configuration_options().get('spaces') or {})
             caps={'pan_tilt_absolute':bool(spaces.get('AbsolutePanTiltPositionSpace')),'pan_tilt_relative':bool(spaces.get('RelativePanTiltTranslationSpace')),'pan_tilt_continuous':bool(spaces.get('ContinuousPanTiltVelocitySpace')),'zoom_absolute':bool(spaces.get('AbsoluteZoomPositionSpace')),'zoom_relative':bool(spaces.get('RelativeZoomTranslationSpace')),'zoom_continuous':bool(spaces.get('ContinuousZoomVelocitySpace'))}
             try:presets=client.get_presets()
