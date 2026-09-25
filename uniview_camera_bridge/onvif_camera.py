@@ -50,7 +50,7 @@ class ONVIFCamera:
         self.base=host.rstrip('/'); self.username=username; self.password=password
         self.timeout=float(timeout); self.rewrite=bool(rewrite_xaddr_host)
         self.action_in_content_type=bool(action_in_content_type); self.nonce_encoding=nonce_encoding; self.prefer_getservices=bool(prefer_getservices)
-        self.session=session or requests.Session(); self._services=None; self._profiles=None; self._configs={}
+        self.session=session or requests.Session(); self._services=None; self._profiles=None; self._configs={}; self._device_url=None
 
     def fork(self):
         """Return an equivalent client with an independent HTTP session.
@@ -65,6 +65,7 @@ class ONVIFCamera:
         other._services=dict(self._services) if self._services is not None else None
         other._profiles=list(self._profiles) if self._profiles is not None else None
         other._configs=dict(self._configs)
+        other._device_url=self._device_url
         return other
 
     def _wsse(self):
@@ -85,11 +86,36 @@ class ONVIFCamera:
             return f'{b.scheme}://{b.netloc}{p.path}{q}'
         return url
 
+    def _device_call(self,body,action):
+        # ONVIF commonly uses /onvif/device_service, but some devices (including
+        # the tested Tapo C220) expose all services through /onvif/service.
+        # Cache the first endpoint that accepts a device-service request.
+        urls=[self._device_url] if self._device_url else []
+        urls += [self.base+'/onvif/device_service',self.base+'/onvif/service']
+        seen=set(); last=None
+        for url in urls:
+            if not url or url in seen:continue
+            seen.add(url)
+            try:
+                r=self.soap(url,body,action)
+                self._device_url=url
+                return r
+            except requests.HTTPError as e:
+                last=e
+                response=getattr(e,'response',None)
+                status=getattr(response,'status_code',None)
+                # Endpoint-shape failures are safe to retry at the alternate
+                # standard/common-service path. Authentication and server
+                # failures must not be hidden by probing another URL.
+                if status not in (400,404,405):raise
+        if last:raise last
+        raise RuntimeError('No ONVIF device-service endpoint available')
+
     def services(self):
         if self._services:return dict(self._services)
-        url=self.base+'/onvif/device_service'; out={}
+        out={}
         def getservices():
-            r=self.soap(url,f'<tds:GetServices xmlns:tds="{DEVICE_NS}"><tds:IncludeCapability>true</tds:IncludeCapability></tds:GetServices>',DEVICE_NS+'/GetServices')
+            r=self._device_call(f'<tds:GetServices xmlns:tds="{DEVICE_NS}"><tds:IncludeCapability>true</tds:IncludeCapability></tds:GetServices>',DEVICE_NS+'/GetServices')
             root=ET.fromstring(r.content); found={}
             for svc in root.iter():
                 if ln(svc.tag)!='Service':continue
@@ -100,7 +126,7 @@ class ONVIFCamera:
                 if ns and x:found[ns]=self._norm(x)
             return found
         def capabilities():
-            r=self.soap(url,f'<tds:GetCapabilities xmlns:tds="{DEVICE_NS}"><tds:Category>All</tds:Category></tds:GetCapabilities>',DEVICE_NS+'/GetCapabilities')
+            r=self._device_call(f'<tds:GetCapabilities xmlns:tds="{DEVICE_NS}"><tds:Category>All</tds:Category></tds:GetCapabilities>',DEVICE_NS+'/GetCapabilities')
             root=ET.fromstring(r.content); found={}
             for p in root.iter():
                 ns={'Media':MEDIA_NS,'PTZ':PTZ_NS}.get(ln(p.tag))
@@ -115,7 +141,7 @@ class ONVIFCamera:
         self._services=out; return dict(out)
 
     def device_information(self):
-        r=self.soap(self.base+'/onvif/device_service',f'<tds:GetDeviceInformation xmlns:tds="{DEVICE_NS}"/>',DEVICE_NS+'/GetDeviceInformation')
+        r=self._device_call(f'<tds:GetDeviceInformation xmlns:tds="{DEVICE_NS}"/>',DEVICE_NS+'/GetDeviceInformation')
         root=ET.fromstring(r.content); out={}
         for e in root.iter():
             key={'Manufacturer':'manufacturer','Model':'model','FirmwareVersion':'firmware_version','HardwareId':'hardware_id','SerialNumber':'serial_number'}.get(ln(e.tag))
