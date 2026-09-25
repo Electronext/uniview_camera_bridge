@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0
+## 0.1.0-rc1
 
 - Add direct local ONVIF camera discovery using WS-Security UsernameToken authentication.
 - Add continuous pan/tilt control and stop semantics compatible with the existing WebRTC PTZ command payload.
@@ -17,3 +17,4 @@
 - Escape dynamic ONVIF SOAP text consistently, including usernames and camera-supplied profile, configuration, and preset tokens.
 - Add absolute and relative pan/tilt commands, position feedback, and native preset buttons.
 - Keep ONVIF PullPoint events out of the first release pending transport compatibility work.
+- Mark this build as a release candidate for controlled Home Assistant hardware validation before merge.
