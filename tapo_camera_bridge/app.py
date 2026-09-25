@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
 
-VERSION='0.1.0b14'; stop_requested=False
+VERSION='0.1.0b15'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -273,15 +273,18 @@ class Bridge:
         # Controlled hardware diagnostic: one axis at a time, with GetStatus
         # before/after and an unconditional Stop after ContinuousMove.
         mode=str(d.get('mode','')).strip().lower()
-        axis=str(d.get('axis','')).strip().lower()
-        value=float(d.get('value',0))
         if mode not in ('continuous','relative'):raise ValueError('ptz_test mode must be continuous or relative')
-        if axis not in ('pan','tilt'):raise ValueError('ptz_test axis must be pan or tilt')
-        if not math.isfinite(value) or abs(value)<1e-6:raise ValueError('ptz_test value must be finite and non-zero')
-        value=max(-1,min(1,value))
+        if 'pan' in d or 'tilt' in d:
+            pan=float(d.get('pan',0)); tilt=float(d.get('tilt',0))
+            if not math.isfinite(pan) or not math.isfinite(tilt) or (abs(pan)<1e-6 and abs(tilt)<1e-6):raise ValueError('ptz_test pan/tilt must be finite and not both zero')
+            pan=max(-1,min(1,pan)); tilt=max(-1,min(1,tilt))
+        else:
+            axis=str(d.get('axis','')).strip().lower(); value=float(d.get('value',0))
+            if axis not in ('pan','tilt'):raise ValueError('ptz_test axis must be pan or tilt')
+            if not math.isfinite(value) or abs(value)<1e-6:raise ValueError('ptz_test value must be finite and non-zero')
+            value=max(-1,min(1,value)); pan=value if axis=='pan' else 0.0; tilt=value if axis=='tilt' else 0.0
         before=r.client.get_status()
-        logging.info('%s PTZ TEST %s %s=%+.3f before: pan=%s tilt=%s',r.camera_id,mode,axis,value,before.pan,before.tilt)
-        pan=value if axis=='pan' else 0.0; tilt=value if axis=='tilt' else 0.0
+        logging.info('%s PTZ TEST %s vector=(%+.3f,%+.3f) before: pan=%s tilt=%s',r.camera_id,mode,pan,tilt,before.pan,before.tilt)
         if mode=='continuous':
             duration=max(.05,min(1.0,float(d.get('duration',.25))))
             r.client.continuous_move(pan=pan,tilt=tilt)
@@ -294,7 +297,7 @@ class Bridge:
             # Give the target move time to settle before sampling its result.
             time.sleep(max(.1,min(2.0,float(d.get('settle',.5)))))
         after=r.client.get_status(); r.last=after
-        logging.info('%s PTZ TEST %s %s=%+.3f after: pan=%s tilt=%s delta_pan=%s delta_tilt=%s',r.camera_id,mode,axis,value,after.pan,after.tilt,None if before.pan is None or after.pan is None else after.pan-before.pan,None if before.tilt is None or after.tilt is None else after.tilt-before.tilt)
+        logging.info('%s PTZ TEST %s vector=(%+.3f,%+.3f) after: pan=%s tilt=%s delta_pan=%s delta_tilt=%s',r.camera_id,mode,pan,tilt,after.pan,after.tilt,None if before.pan is None or after.pan is None else after.pan-before.pan,None if before.tilt is None or after.tilt is None else after.tilt-before.tilt)
         self.publish_state(r)
         return
 
