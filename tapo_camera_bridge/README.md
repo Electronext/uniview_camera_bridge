@@ -58,7 +58,28 @@ The shared ONVIF client XML-escapes camera/user supplied SOAP text such as usern
 
 ## WebRTC Camera card
 
-The bridge accepts the same JSON velocity contract used by the existing WebRTC Camera card integration: normalized `pan`, `tilt`, and `zoom` values on the camera's `/ptz` MQTT command topic, with `{"stop":true}` for release. The exact Lovelace YAML depends on the PTZ MQTT/service hooks exposed by the installed WebRTC card version; see the project test notes/configuration for the card-side mapping rather than publishing camera credentials in Lovelace.
+The Electronext WebRTC Camera 3.6.18 fork supports a proportional joystick through `data_joystick` / `data_joystick_stop`. Point those service templates directly at the bridge's MQTT PTZ topic:
+
+```yaml
+type: custom:webrtc-camera
+url: tapo_c220
+ui: true
+ptz:
+  service: mqtt.publish
+  joystick: true
+  joystick_mode: dynamic
+  data_joystick:
+    topic: tapo_camera_bridge/command/c220/ptz
+    payload: '{"pan":${pan},"tilt":${tilt}}'
+  data_joystick_stop:
+    topic: tapo_camera_bridge/command/c220/ptz
+    payload: '{"stop":true}'
+```
+
+Replace `tapo_c220` with the actual go2rtc stream name if different. The C220 tested for this bridge has pan/tilt but no advertised continuous optical zoom, so the joystick payload deliberately omits `zoom`. The card substitutes its normalized proportional `${pan}` and `${tilt}` values before calling Home Assistant's `mqtt.publish` service. Pointer release/cancel sends the explicit Stop payload, and the 3.6.18 fork also repeats that Stop after its configured short release delay.
+
+Useful optional joystick tuning from the fork includes `joystick_min_speed`, `joystick_max_speed`, `joystick_curve`, `joystick_update_ms`, `joystick_heartbeat_ms`, `joystick_stop_repeat_ms`, `joystick_radius`, `joystick_radius_touch`, `joystick_deadband`, and `joystick_deadband_touch`. Start with the defaults before tuning them for the C220.
+
 
 ## Release-candidate boundary
 
