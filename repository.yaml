@@ -1,3 +1,7 @@
 name: Electronext Camera Bridges (Beta)
 url: https://github.com/Electronext/uniview_camera_bridge
 maintainer: d3xt3r1ty
+
+# Beta channel: add this repository to Home Assistant as
+# https://github.com/Electronext/uniview_camera_bridge#beta
+# Stable channel uses the repository URL without a branch suffix.
