@@ -21,6 +21,7 @@ import numpy as np
 from ha_mqtt import HomeAssistantClient, MQTTDiscovery
 from alarm_service import AlarmServiceBridge, UniviewEvent
 from uniview import UniviewCamera
+from ptz_motion import UniviewPTZMotionManager
 
 OPTIONS_PATH = Path("/data/options.json")
 PERSIST_DIR = Path("/config")
@@ -597,6 +598,44 @@ def ptz_capability_flags(options_data: dict[str, Any]) -> dict[str, bool]:
     }
 
 
+def camera_ptz_is_velocity(command: dict[str, Any]) -> bool:
+    """True only for a non-zero continuous PTZ sample.
+
+    The legacy Uniview contract treats an all-zero vector exactly like Stop, so
+    zero-vector release messages must be ordering barriers too.
+    """
+    if str(command.get("action", "")) != "camera_ptz" or bool(command.get("stop", False)):
+        return False
+    try:
+        values = tuple(float(command.get(key, 0.0)) for key in ("pan", "tilt", "zoom"))
+    except (TypeError, ValueError):
+        return False
+    return all(math.isfinite(value) for value in values) and any(abs(value) >= 1e-6 for value in values)
+
+
+def coalesce_camera_ptz(first: dict[str, Any], commands: queue.Queue[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any] | None, int]:
+    """Coalesce only consecutive velocity samples for one camera.
+
+    Explicit Stop, legacy all-zero Stop, target/other actions and commands for
+    another camera are ordering barriers. The first barrier is returned instead
+    of being put back at the tail, which preserves global command order.
+    """
+    source_id = int(first.get("source_id", 0))
+    latest = first
+    count = 0
+    while True:
+        try:
+            candidate = commands.get_nowait()
+        except queue.Empty:
+            return latest, None, count
+        same_velocity = camera_ptz_is_velocity(candidate) and int(candidate.get("source_id", 0)) == source_id
+        if same_velocity:
+            latest = candidate
+            count += 1
+            continue
+        return latest, candidate, count
+
+
 def build_camera_clients(options: dict[str, Any]) -> dict[int, UniviewCamera]:
     host = str(options.get("alarm_snapshot_host", "192.168.90.5")).strip()
     port_base = int(options.get("alarm_snapshot_port_base", 30000))
@@ -941,6 +980,28 @@ def main() -> int:
         else:
             caps["ptz_zoom"] = False
     options["_camera_capabilities"] = camera_caps
+    ptz_motion = UniviewPTZMotionManager(
+        safety_timeout=float(options.get("ptz_safety_timeout_seconds", 3.0)),
+        stop_retry=float(options.get("ptz_stop_retry_seconds", 0.5)),
+        watchdog_interval=float(options.get("ptz_watchdog_interval_seconds", 0.05)),
+    )
+    for source_id, client in camera_clients.items():
+        caps = camera_caps.get(source_id, {})
+        if caps.get("ptz_pan_tilt_continuous") or caps.get("ptz_zoom_continuous"):
+            try:
+                safety_client = client.fork_ptz_safety_client()
+                ptz_motion.register(source_id, client, safety_client)
+                opts = caps.get("ptz_options") or {}
+                logging.info(
+                    "D%d PTZ transport profile=%r configuration=%r endpoint=%r",
+                    source_id,
+                    opts.get("profile"),
+                    opts.get("configuration_token"),
+                    getattr(safety_client, "services", lambda: {})().get("http://www.onvif.org/ver20/ptz/wsdl"),
+                )
+            except Exception as exc:
+                logging.warning("D%d independent PTZ safety session unavailable; continuous PTZ disabled: %s", source_id, exc)
+    ptz_motion.start()
     mqtt = MQTTDiscovery(options, commands)
     mqtt.start()
     event_dir = PERSIST_DIR / "events"
@@ -1032,7 +1093,7 @@ def main() -> int:
     lamp_watch_seconds = max(0.2, float(options.get("lamp_watch_seconds", 1.0)))
     next_lamp_watch = 0.0
     last_lamp_watch: dict[int, str] = {}
-    ptz_stop_deadlines: dict[int, float] = {}
+    pending_command: dict[str, Any] | None = None
     ptz_zoom_poll = max(0.2, float(options.get("ptz_zoom_poll_seconds", 1.0)))
     ptz_zoom_active_poll = max(0.1, float(options.get("ptz_zoom_active_poll_seconds", 0.2)))
     ptz_zoom_tolerance = max(0.05, float(options.get("ptz_zoom_target_tolerance_percent", 0.5)))
@@ -1045,30 +1106,21 @@ def main() -> int:
     try:
         while not stop_requested:
             try:
-                command = commands.get(timeout=0.02)
+                if pending_command is not None:
+                    command = pending_command
+                    pending_command = None
+                else:
+                    command = commands.get(timeout=0.02)
             except queue.Empty:
                 command = None
             try:
                 event_state.expire()
                 if command:
-                    if str(command.get("action", "")) == "camera_ptz":
+                    if camera_ptz_is_velocity(command):
                         source_id = int(command.get("source_id", 0))
-                        deferred: list[dict[str, Any]] = []
-                        coalesced = 0
-                        for _ in range(commands.qsize()):
-                            try:
-                                candidate = commands.get_nowait()
-                            except queue.Empty:
-                                break
-                            if str(candidate.get("action", "")) == "camera_ptz" and int(candidate.get("source_id", 0)) == source_id:
-                                command = candidate
-                                coalesced += 1
-                            else:
-                                deferred.append(candidate)
-                        for candidate in deferred:
-                            commands.put(candidate)
+                        command, pending_command, coalesced = coalesce_camera_ptz(command, commands)
                         if coalesced:
-                            logging.debug("D%d coalesced %d stale PTZ command(s)", source_id, coalesced)
+                            logging.debug("D%d coalesced %d consecutive stale PTZ velocity command(s)", source_id, coalesced)
                     action = str(command.get("action", ""))
                     if action.startswith("camera_"):
                         source_id = int(command.get("source_id", 0))
@@ -1196,7 +1248,10 @@ def main() -> int:
                                 if not 0.0 <= position <= 1.0:
                                     raise ValueError(f"D{source_id} bridge zoom preset {requested!r} position must be 0..1")
                                 percent = position * 100.0
-                                client.set_zoom(position)
+                                if source_id in ptz_motion.states:
+                                    ptz_motion.submit_target(source_id, lambda c=client, p=position: c.set_zoom(p))
+                                else:
+                                    client.set_zoom(position)
                                 ptz_zoom_targets[source_id] = percent
                                 next_ptz_zoom_poll[source_id] = time.monotonic()
                                 logging.info("D%d bridge zoom preset %s -> %.1f%%", source_id, requested, percent)
@@ -1208,7 +1263,10 @@ def main() -> int:
                                 percent = float(command.get("percent"))
                                 if not 0.0 <= percent <= 100.0:
                                     raise ValueError(f"D{source_id} zoom percentage must be between 0 and 100, got {percent}")
-                                client.set_zoom(percent / 100.0)
+                                if source_id in ptz_motion.states:
+                                    ptz_motion.submit_target(source_id, lambda c=client, p=percent / 100.0: c.set_zoom(p))
+                                else:
+                                    client.set_zoom(percent / 100.0)
                                 # AbsoluteMove is intentionally non-blocking. The camera may
                                 # accept a newer target while still travelling; position is
                                 # observed independently by the fast active-motion poll.
@@ -1218,15 +1276,22 @@ def main() -> int:
                         elif action == "camera_ptz":
                             camera_def = next((item for item in camera_defs if int(item.get("source_id", 0)) == source_id), {})
                             caps = camera_caps.get(source_id, {})
+                            manager_available = source_id in ptz_motion.states
                             if bool(command.get("stop", False)):
-                                if caps.get("ptz_zoom_continuous") or caps.get("ptz_pan_tilt_continuous"):
+                                if manager_available:
+                                    ptz_motion.stop(source_id)
+                                elif caps.get("ptz_zoom_continuous") or caps.get("ptz_pan_tilt_continuous"):
                                     client.stop_move()
-                                ptz_stop_deadlines.pop(source_id, None)
                                 logging.debug("D%d PTZ stop", source_id)
                             else:
-                                pan = max(-1.0, min(1.0, float(command.get("pan", 0.0))))
-                                tilt = max(-1.0, min(1.0, float(command.get("tilt", 0.0))))
-                                zoom = max(-1.0, min(1.0, float(command.get("zoom", 0.0))))
+                                pan = float(command.get("pan", 0.0))
+                                tilt = float(command.get("tilt", 0.0))
+                                zoom = float(command.get("zoom", 0.0))
+                                if not all(math.isfinite(v) for v in (pan, tilt, zoom)):
+                                    raise ValueError("PTZ velocities must be finite")
+                                pan = max(-1.0, min(1.0, pan))
+                                tilt = max(-1.0, min(1.0, tilt))
+                                zoom = max(-1.0, min(1.0, zoom))
                                 wants_pan_tilt = abs(pan) >= 1e-6 or abs(tilt) >= 1e-6
                                 wants_zoom = abs(zoom) >= 1e-6
                                 pan_tilt_allowed = bool(camera_def.get("ptz_enabled", False)) and caps.get("ptz_pan_tilt_continuous")
@@ -1236,13 +1301,15 @@ def main() -> int:
                                 elif wants_zoom and not zoom_allowed:
                                     logging.warning("D%d does not expose continuous zoom", source_id)
                                 elif not wants_pan_tilt and not wants_zoom:
-                                    client.stop_move()
-                                    ptz_stop_deadlines.pop(source_id, None)
+                                    if manager_available:
+                                        ptz_motion.stop(source_id)
+                                    else:
+                                        client.stop_move()
+                                elif not manager_available:
+                                    logging.warning("D%d continuous PTZ ignored because independent safety transport is unavailable", source_id)
                                 else:
-                                    client.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
-                                    timeout = float(options.get("ptz_safety_timeout_seconds", 3.0))
-                                    ptz_stop_deadlines[source_id] = time.monotonic() + timeout
-                                    logging.debug("D%d PTZ velocity pan=%.3f tilt=%.3f zoom=%.3f", source_id, pan, tilt, zoom)
+                                    ptz_motion.submit_move(source_id, pan, tilt, zoom)
+                                    logging.debug("D%d PTZ velocity queued pan=%.3f tilt=%.3f zoom=%.3f", source_id, pan, tilt, zoom)
                     elif action.startswith("rear_zoom_"):
                         if rear_camera is None:
                             logging.warning("Rear zoom command ignored because rear camera is disabled")
@@ -1254,20 +1321,9 @@ def main() -> int:
                         status = execute_command(command, camera, options, templates, state, ha)
                         if status:
                             mqtt.publish_status(status)
-                expired_ptz = [source_id for source_id, deadline in ptz_stop_deadlines.items() if time.monotonic() >= deadline]
-                for source_id in expired_ptz:
-                    client = camera_clients.get(source_id)
-                    ptz_stop_deadlines.pop(source_id, None)
-                    if client is not None:
-                        try:
-                            client.stop_move()
-                            logging.warning("D%d PTZ safety timeout: movement stopped", source_id)
-                        except Exception as exc:
-                            logging.error("D%d PTZ safety stop failed: %s", source_id, exc)
-
                 now_mono = time.monotonic()
                 for source_id, deadline in list(next_ptz_zoom_poll.items()):
-                    if now_mono < deadline or source_id in ptz_stop_deadlines:
+                    if now_mono < deadline or ptz_motion.is_moving(source_id):
                         continue
                     client = camera_clients.get(source_id)
                     if client is None:
@@ -1366,6 +1422,7 @@ def main() -> int:
                 mqtt.publish_status(status)
                 next_check = time.monotonic() + interval
     finally:
+        ptz_motion.shutdown(float(options.get("shutdown_stop_wait_seconds", 0.5)))
         if alarm_bridge is not None:
             alarm_bridge.stop()
         mqtt.stop()

@@ -1,0 +1,103 @@
+# Tapo Camera Bridge
+
+Home Assistant add-on that exposes local ONVIF PTZ control and position feedback for TP-Link Tapo cameras and other compatible ONVIF PTZ devices.
+
+The initial implementation is intentionally local-only and focused on the PTZ path required by the WebRTC card. It does not require the Tapo cloud service after the camera account/ONVIF credentials have been configured.
+
+## Home Assistant add-on configuration
+
+The bridge is a separate add-on from the Uniview bridge. Configure each direct ONVIF camera in the add-on options. For the tested C220, the ONVIF endpoint is the camera host on port `2020`; use the camera's local/ONVIF credentials rather than TP-Link cloud credentials.
+
+Example:
+
+```yaml
+cameras:
+  - id: c220
+    name: Indoor PTZ
+    host: 192.168.90.113:2020
+    username: viewer
+    password: "<ONVIF password>"
+    enabled: true
+mqtt_topic: tapo_camera_bridge
+ptz_safety_timeout_seconds: 3.0
+```
+
+The camera `id` becomes part of the MQTT command topic. Keep it stable once dashboards have been configured.
+
+## MQTT PTZ command
+
+The WebRTC-compatible continuous PTZ command topic is:
+
+```text
+<tapo mqtt_topic>/command/<camera id>/ptz
+```
+
+Velocity payload:
+
+```json
+{"pan":0.4,"tilt":0.0,"zoom":0.0}
+```
+
+Stop payload:
+
+```json
+{"stop":true}
+```
+
+Pan and tilt use the ONVIF normalized `-1..1` velocity range. Continuous movement is protected by a per-camera safety watchdog with independent pan/tilt and zoom activity/deadline tracking. Each camera has an independent watchdog and ONVIF safety session, so a blocked command or Stop request on one camera cannot delay the safety deadline of another camera.
+
+The watchdog is deliberately independent of normal command I/O: if a `ContinuousMove` request is accepted by the camera but its HTTP response stalls or is lost, the watchdog can still issue `Stop` at the configured `ptz_safety_timeout_seconds` deadline. When that blocked `ContinuousMove` eventually completes—successfully or with a transport error—its generation is reconciled. If its earlier safety Stop has already completed, an immediate follow-up Stop is armed. If the earlier Stop is still in flight, the generation is marked so that Stop completion itself schedules a mandatory follow-up Stop. Thus an ambiguous late movement outcome cannot be declared safe merely because an overlapping Stop's response arrives later. Failed safety Stops are retried after `ptz_stop_retry_seconds`; watchdog and shutdown Stops request only the continuous axes that are due or still considered potentially active. A short target-transition deadline can therefore stop PT without prematurely stopping an unrelated continuous zoom. Watchdog decisions carry the exact movement generation and deadline they observed and revalidate both atomically before issuing Stop, so a stale watchdog observation cannot cancel a newer joystick command. Any new movement-producing command for the same camera—continuous, absolute, relative, or preset—is serialized behind a safety Stop already in flight, preventing an older Stop from racing and cancelling the newer command. Absolute, relative, and preset moves supersede only the continuous axes they actually command. For example, a pan/tilt target that omits zoom leaves any continuous zoom safety state armed; a target containing both PT and zoom retires both axes. Their payload is validated first; the old continuous-move deadline is retired immediately before transmitting the target command. While the replacement request is in flight, the previous continuous motion remains safety-covered with a short `ptz_transition_safety_seconds` deadline (default 0.5 s), so a stalled 15-second HTTP request cannot leave the camera moving unchecked. If transmission fails ambiguously, safety remains/re-becomes armed immediately because the camera may still be executing the earlier continuous movement. This prevents both stale Stops after a successful target move and loss of the safety net during or after a failed one.
+
+The bridge also accepts absolute and relative pan/tilt JSON commands on `/absolute` and `/relative`, and publishes native ONVIF preset buttons when the camera advertises presets. Velocity-command coalescing applies only to consecutive PTZ updates for the same camera; explicit Stop, absolute/relative/preset movement, and commands for another camera are ordering barriers and are never reordered across.
+
+## ONVIF transport notes
+
+During add-on shutdown, best-effort Stops for all cameras that may still be moving are dispatched independently before the bridge waits for them. Their completions are generation-checked as well, so a late shutdown response cannot clear newer PTZ state. `shutdown_stop_wait_seconds` bounds how long shutdown waits for those requests; a slow or unreachable camera cannot prevent Stop from being sent to the others.
+
+The shared ONVIF client XML-escapes camera/user supplied SOAP text such as usernames, profile/configuration tokens and preset tokens. The Tapo bridge creates a separate ONVIF client/session for safety Stops while reusing the discovered service/profile metadata; this is what allows safety traffic to proceed while the normal command session is blocked.
+
+## WebRTC Camera card
+
+The Electronext WebRTC Camera 3.6.18 fork supports a proportional joystick through `data_joystick` / `data_joystick_stop`. Point those service templates directly at the bridge's MQTT PTZ topic:
+
+```yaml
+type: custom:webrtc-camera
+url: tapo_c220
+ui: true
+ptz:
+  service: mqtt.publish
+  joystick: true
+  joystick_mode: dynamic
+  data_joystick:
+    topic: tapo_camera_bridge/command/c220/ptz
+    payload: '{"pan":${pan},"tilt":${tilt}}'
+  data_joystick_stop:
+    topic: tapo_camera_bridge/command/c220/ptz
+    payload: '{"stop":true}'
+```
+
+Replace `tapo_c220` with the actual go2rtc stream name if different. The C220 tested for this bridge has pan/tilt but no advertised continuous optical zoom, so the joystick payload deliberately omits `zoom`. The card substitutes its normalized proportional `${pan}` and `${tilt}` values before calling Home Assistant's `mqtt.publish` service. Pointer release/cancel sends the explicit Stop payload, and the 3.6.18 fork also repeats that Stop after its configured short release delay.
+
+Useful optional joystick tuning from the fork includes `joystick_min_speed`, `joystick_max_speed`, `joystick_curve`, `joystick_update_ms`, `joystick_heartbeat_ms`, `joystick_stop_repeat_ms`, `joystick_radius`, `joystick_radius_touch`, `joystick_deadband`, and `joystick_deadband_touch`. Start with the defaults before tuning them for the C220.
+
+
+## Release-candidate boundary
+
+The 0.1.0-rc1 build is intended for controlled hardware validation before the feature branch is merged. Two known Uniview-only concurrency review findings remain open around rare overlaps between target commands, watchdog expiry, and subsequent movement; they do not affect the Tapo bridge implementation. PullPoint event ingestion remains deferred.
+
+## Current boundary
+
+PullPoint event ingestion is deliberately deferred. The C220 advertises motion, people, line-crossing, tamper, and TP-Link smart-event topics, but its dynamic PullPoint transport needs further compatibility work before it is included here.
+
+
+ContinuousMove serialization distinguishes an omitted axis from an explicit zero velocity. Explicit zero is sent on the wire and retires prior continuous state only after the replacement request succeeds; omission leaves that axis untouched.
+
+### PTZ command contracts
+
+The Tapo MQTT velocity payload is a partial-axis patch: omitted axes are unchanged, while an explicit numeric zero requests zero velocity for that component. Pan and tilt are serialized by ONVIF as one PanTilt vector, so the bridge retains the last successfully commanded PT vector and fills an omitted pan or tilt component from that vector. Consecutive velocity messages are also coalesced by merging the latest value per axis, never by discarding omitted-axis state. Explicit zeroes for an unsupported continuous axis are filtered before serialization; non-zero requests for an unsupported axis are rejected. Explicit Stop and target commands are ordering barriers.
+
+The shared ONVIF client uses the same unambiguous contract (None = omitted, numeric zero = serialized). The Uniview compatibility adapter intentionally translates the legacy Uniview contract (zero-valued components omitted; all-zero = Stop) before calling the shared client, so existing Uniview behavior is not changed by the Tapo semantics.
+
+Because ONVIF preset metadata does not reliably state whether zoom is encoded in a preset, the Tapo bridge resolves any tracked continuous zoom with a zoom-only Stop before issuing GotoPreset. This prevents a stale zoom watchdog from interrupting preset travel.
+
+Safety deadlines are measured from command transmission/arming, not from the HTTP response. A normal successful response therefore does not extend the watchdog interval. A fresh interval is assigned only when the same movement generation was actually stopped by the watchdog while its request was still outstanding and the late successful outcome can have restarted motion.
