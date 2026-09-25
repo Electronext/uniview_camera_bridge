@@ -1,5 +1,5 @@
 name: Tapo Camera Bridge
-version: 0.1.0b12
+version: 0.1.0b13
 slug: tapo_camera_bridge
 description: Local ONVIF PTZ bridge for TP-Link Tapo and compatible cameras
 url: https://github.com/Electronext/uniview_camera_bridge
