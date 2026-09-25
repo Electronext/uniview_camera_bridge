@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
 
-VERSION='0.1.0b11'; stop_requested=False
+VERSION='0.1.0b12'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -20,7 +20,7 @@ def slug(v):return '_'.join(''.join(c.lower() if c.isalnum() else '_' for c in v
 class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
     safety_client:ONVIFCamera|None=None
-    moving:bool=False; moving_pt:bool=False; moving_zoom:bool=False; stop_deadline:float|None=None; stop_deadline_pt:float|None=None; stop_deadline_zoom:float|None=None; next_poll:float=0; last:PTZPosition|None=None
+    moving:bool=False; moving_pt:bool=False; moving_zoom:bool=False; stop_deadline:float|None=None; stop_deadline_pt:float|None=None; stop_deadline_zoom:float|None=None; next_poll:float=0; last:PTZPosition|None=None; last_update:str|None=None
     movement_generation:int=0; stop_in_progress:bool=False; stop_in_progress_pt:bool=False; stop_in_progress_zoom:bool=False; stop_again_generation:int|None=None; stop_again_pt:bool=False; stop_again_zoom:bool=False; stopped_generation_pt:int|None=None; stopped_generation_zoom:int|None=None; commanded_pan:float=0.0; commanded_tilt:float=0.0; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
     stop_condition:threading.Condition=field(init=False,repr=False)
     def __post_init__(self):
@@ -45,12 +45,12 @@ class Bridge:
         if r.caps.get('zoom_absolute'):
             cfg('sensor','zoom_position',{'name':'Zoom position','state_topic':state,'value_template':'{{ value_json.zoom if value_json.zoom is not none else none }}','state_class':'measurement'})
         cfg('binary_sensor','connected',{'name':'ONVIF connected','state_topic':state,'value_template':"{{ 'ON' if value_json.healthy else 'OFF' }}",'payload_on':'ON','payload_off':'OFF','device_class':'connectivity','entity_category':'diagnostic'})
-        cfg('sensor','last_update',{'name':'Last PTZ update','state_topic':state,'value_template':'{{ value_json.checked }}','device_class':'timestamp','entity_category':'diagnostic'})
+        cfg('sensor','last_update',{'name':'Last PTZ update','state_topic':state,'value_template':'{{ value_json.last_update if value_json.last_update is not none else none }}','device_class':'timestamp','entity_category':'diagnostic'})
         for i,p in enumerate(r.presets,1):
             token=p.get('token'); name=p.get('name') or f'Preset {token or i}'
             if token is not None:cfg('button',f'preset_{slug(str(token))}',{'name':f'PTZ preset: {name}','command_topic':f'{self.base}/command/{r.camera_id}/preset','payload_press':str(token),'icon':'mdi:camera-control'})
     def publish_state(self,r,healthy=True,error=None):
-        p=r.last or PTZPosition(); self.pub(f'{self.base}/{r.camera_id}/state',json.dumps({'healthy':healthy,'checked':now(),'pan':p.pan,'tilt':p.tilt,'zoom':p.zoom,'moving':r.moving,'last_error':error},separators=(',',':')),True)
+        p=r.last or PTZPosition(); self.pub(f'{self.base}/{r.camera_id}/state',json.dumps({'healthy':healthy,'checked':now(),'last_update':r.last_update,'pan':p.pan,'tilt':p.tilt,'zoom':p.zoom,'moving':r.moving,'last_error':error},separators=(',',':')),True)
     def on_connect(self,c,*args):
         c.subscribe(f'{self.base}/command/+/+'); self.pub(f'{self.base}/availability','online',True)
         for r in self.cameras.values():self.discover_one(r)
@@ -62,6 +62,7 @@ class Bridge:
         if action in ('ptz','absolute','relative'):
             try:data=json.loads(payload); assert isinstance(data,dict)
             except Exception:logging.warning('Ignoring invalid %s payload %r',action,payload); return
+            if action=='ptz':logging.debug('%s PTZ MQTT input: %s',cid,json.dumps(data,separators=(',',':'),sort_keys=True))
             self.q.put((cid,action,data))
         elif action=='preset':self.q.put((cid,action,{'token':payload.strip()}))
     def setup(self):
@@ -271,6 +272,7 @@ class Bridge:
     def execute(self,r,action,d):
         if action=='ptz':
             if d.get('stop'):
+                logging.debug('%s PTZ explicit Stop input',r.camera_id)
                 with r.stop_condition:
                     while r.stop_in_progress:
                         r.stop_condition.wait(.1)
@@ -323,6 +325,7 @@ class Bridge:
             )
             succeeded=False
             try:
+                logging.debug('%s PTZ ContinuousMove output: pan=%s tilt=%s zoom=%s',r.camera_id,pan if touch_pt else None,tilt if touch_pt else None,zoom if touch_zoom else None)
                 r.client.continuous_move(pan=pan if touch_pt else None,tilt=tilt if touch_pt else None,zoom=zoom if touch_zoom else None)
                 succeeded=True
             finally:
@@ -420,7 +423,8 @@ class Bridge:
                 if r:
                     if action=='ptz' and not d.get('stop'):
                         cid,action,d=self.coalesce_ptz((cid,action,d)); r=self.cameras[cid]
-                    try:self.execute(r,action,d)
+                    try:
+                        self.execute(r,action,d); r.last_update=now()
                     except Exception as e:logging.exception('Camera command failed'); self.publish_state(r,False,str(e))
                 t=time.monotonic()
                 for r in self.cameras.values():
