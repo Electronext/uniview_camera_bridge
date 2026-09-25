@@ -3,7 +3,7 @@ version: 1.7.0-rc1
 slug: uniview_camera_bridge
 description: Bridges Uniview smart events and camera controls into Home Assistant
   while preserving PTZ drift monitoring and motorised-zoom controls.
-url: https://github.com/d3xt3r1ty/uniview_camera_bridge
+url: https://github.com/Electronext/uniview_camera_bridge
 arch:
 - aarch64
 - amd64
