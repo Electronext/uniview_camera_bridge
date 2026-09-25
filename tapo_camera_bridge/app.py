@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import paho.mqtt.client as mqtt
-from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
+from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_LEGACY
 
 VERSION='0.1.0b3'; stop_requested=False
 
@@ -69,7 +69,7 @@ class Bridge:
             if not isinstance(raw,dict) or not raw.get('enabled',True):continue
             cid=slug(str(raw.get('id') or raw.get('name') or 'camera')); host=str(raw.get('host','')).strip(); user=str(raw.get('username','')).strip(); password=str(raw.get('password',''))
             if not host or not user or not password:raise RuntimeError(f'{cid}: host/username/password required')
-            client=ONVIFCamera(host,user,password,float(self.o.get('request_timeout_seconds',15)),rewrite_xaddr_host=True,action_in_content_type=True,nonce_encoding=WSSE_NONCE_ENCODING_STANDARD)
+            client=ONVIFCamera(host,user,password,float(self.o.get('request_timeout_seconds',15)),rewrite_xaddr_host=True,action_in_content_type=False,nonce_encoding=WSSE_NONCE_ENCODING_LEGACY)
             info=client.get_device_information(); spaces=(client.get_ptz_configuration_options().get('spaces') or {})
             caps={'pan_tilt_absolute':bool(spaces.get('AbsolutePanTiltPositionSpace')),'pan_tilt_relative':bool(spaces.get('RelativePanTiltTranslationSpace')),'pan_tilt_continuous':bool(spaces.get('ContinuousPanTiltVelocitySpace')),'zoom_absolute':bool(spaces.get('AbsoluteZoomPositionSpace')),'zoom_relative':bool(spaces.get('RelativeZoomTranslationSpace')),'zoom_continuous':bool(spaces.get('ContinuousZoomVelocitySpace'))}
             try:presets=client.get_presets()
