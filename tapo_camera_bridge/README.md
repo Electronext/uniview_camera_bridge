@@ -4,6 +4,26 @@ Home Assistant add-on that exposes local ONVIF PTZ control and position feedback
 
 The initial implementation is intentionally local-only and focused on the PTZ path required by the WebRTC card. It does not require the Tapo cloud service after the camera account/ONVIF credentials have been configured.
 
+## Home Assistant add-on configuration
+
+The bridge is a separate add-on from the Uniview bridge. Configure each direct ONVIF camera in the add-on options. For the tested C220, the ONVIF endpoint is the camera host on port `2020`; use the camera's local/ONVIF credentials rather than TP-Link cloud credentials.
+
+Example:
+
+```yaml
+cameras:
+  - id: c220
+    name: Indoor PTZ
+    host: 192.168.90.113:2020
+    username: viewer
+    password: "<ONVIF password>"
+    enabled: true
+mqtt_topic: tapo_camera_bridge
+ptz_safety_timeout_seconds: 3.0
+```
+
+The camera `id` becomes part of the MQTT command topic. Keep it stable once dashboards have been configured.
+
 ## MQTT PTZ command
 
 The WebRTC-compatible continuous PTZ command topic is:
@@ -35,6 +55,14 @@ The bridge also accepts absolute and relative pan/tilt JSON commands on `/absolu
 During add-on shutdown, best-effort Stops for all cameras that may still be moving are dispatched independently before the bridge waits for them. Their completions are generation-checked as well, so a late shutdown response cannot clear newer PTZ state. `shutdown_stop_wait_seconds` bounds how long shutdown waits for those requests; a slow or unreachable camera cannot prevent Stop from being sent to the others.
 
 The shared ONVIF client XML-escapes camera/user supplied SOAP text such as usernames, profile/configuration tokens and preset tokens. The Tapo bridge creates a separate ONVIF client/session for safety Stops while reusing the discovered service/profile metadata; this is what allows safety traffic to proceed while the normal command session is blocked.
+
+## WebRTC Camera card
+
+The bridge accepts the same JSON velocity contract used by the existing WebRTC Camera card integration: normalized `pan`, `tilt`, and `zoom` values on the camera's `/ptz` MQTT command topic, with `{"stop":true}` for release. The exact Lovelace YAML depends on the PTZ MQTT/service hooks exposed by the installed WebRTC card version; see the project test notes/configuration for the card-side mapping rather than publishing camera credentials in Lovelace.
+
+## Release-candidate boundary
+
+The 0.1.0-rc1 build is intended for controlled hardware validation before the feature branch is merged. Two known Uniview-only concurrency review findings remain open around rare overlaps between target commands, watchdog expiry, and subsequent movement; they do not affect the Tapo bridge implementation. PullPoint event ingestion remains deferred.
 
 ## Current boundary
 
