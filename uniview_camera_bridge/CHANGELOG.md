@@ -1,3 +1,10 @@
+## 1.7.0-rc1
+
+- Package the shared ONVIF PTZ transport and independent safety-Stop path for controlled hardware validation.
+- Preserve Stop/target ordering with per-camera PTZ command serialization and watchdog reconciliation.
+- Add the D2 **Auto-rectification enabled** MQTT switch; disabling it gates scheduled image-based drift correction while manual **Run check** and **Rectify** remain available.
+- This RC is intentionally a test deployment from the feature branch; rare target/watchdog concurrency interleavings remain under review and should be exercised before merge.
+
 ## 1.7.0-beta1
 
 - Store bridge-side zoom presets in a Supervisor-compatible top-level `zoom_presets` list keyed by camera `source_id`.
