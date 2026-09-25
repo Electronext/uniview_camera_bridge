@@ -82,6 +82,11 @@ class Tests(unittest.TestCase):
             'http://192.168.90.113:2020/onvif/service',
         ])
 
+    def test_soap_action_can_be_carried_in_content_type(self):
+        s=S([R(OK)]); c=ONVIFCamera('192.168.90.113:2020','viewer','secret',session=s,action_in_content_type=True)
+        c.soap('http://192.168.90.113:2020/onvif/service','<x/>','urn:test-action')
+        self.assertEqual(s.calls[-1][2]['Content-Type'],'application/soap+xml; charset=utf-8; action="urn:test-action"')
+
     def test_shared_service_endpoint(self):
         c,s=self.cam([R(SERVICES)]); x=c.get_services(); self.assertEqual(x[MEDIA_NS],'http://192.168.90.113:2020/onvif/service'); self.assertEqual(x[PTZ_NS],x[MEDIA_NS])
     def test_c220_status_and_spaces(self):
