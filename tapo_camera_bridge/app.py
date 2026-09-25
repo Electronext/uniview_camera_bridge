@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD, MEDIA_NS, PTZ_NS
 
-VERSION='0.1.0b8'; stop_requested=False
+VERSION='0.1.0b9'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -85,6 +85,17 @@ class Bridge:
             # instead of trusting the advertised XAddr routing.
             common=client.base+'/onvif/service'
             client._services={MEDIA_NS:common,PTZ_NS:common}
+            # Diagnostic beta: prove the exact probe-style GetProfiles request before
+            # entering generic discovery. The original probe sends this operation
+            # directly to /onvif/service.
+            try:
+                probe_r=client.soap(common,'<trt:GetProfiles/>',MEDIA_NS+'/GetProfiles')
+                logging.info('%s probe-style GetProfiles succeeded: HTTP %s, %s bytes',cid,probe_r.status_code,len(probe_r.content))
+            except Exception as e:
+                response=getattr(e,'response',None)
+                body=(getattr(response,'text','') or '').replace('\n',' ').strip()
+                logging.error('%s probe-style GetProfiles failed: %s; response=%s',cid,e,body[:4000])
+                raise
             spaces=(client.get_ptz_configuration_options().get('spaces') or {})
             caps={'pan_tilt_absolute':bool(spaces.get('AbsolutePanTiltPositionSpace')),'pan_tilt_relative':bool(spaces.get('RelativePanTiltTranslationSpace')),'pan_tilt_continuous':bool(spaces.get('ContinuousPanTiltVelocitySpace')),'zoom_absolute':bool(spaces.get('AbsoluteZoomPositionSpace')),'zoom_relative':bool(spaces.get('RelativeZoomTranslationSpace')),'zoom_continuous':bool(spaces.get('ContinuousZoomVelocitySpace'))}
             try:presets=client.get_presets()
