@@ -7,7 +7,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from onvif_camera import ONVIFCamera, PTZPosition, WSSE_NONCE_ENCODING_STANDARD
 
-VERSION='0.1.0b15'; stop_requested=False
+VERSION='0.1.0b16'; stop_requested=False
 
 def stop(*_):
     global stop_requested; stop_requested=True
@@ -21,7 +21,7 @@ class CameraRuntime:
     camera_id:str; name:str; client:ONVIFCamera; info:dict[str,Any]; caps:dict[str,bool]; presets:list[dict[str,Any]]
     safety_client:ONVIFCamera|None=None
     moving:bool=False; moving_pt:bool=False; moving_zoom:bool=False; stop_deadline:float|None=None; stop_deadline_pt:float|None=None; stop_deadline_zoom:float|None=None; next_poll:float=0; last:PTZPosition|None=None; last_update:str|None=None
-    movement_generation:int=0; stop_in_progress:bool=False; stop_in_progress_pt:bool=False; stop_in_progress_zoom:bool=False; stop_again_generation:int|None=None; stop_again_pt:bool=False; stop_again_zoom:bool=False; stopped_generation_pt:int|None=None; stopped_generation_zoom:int|None=None; commanded_pan:float=0.0; commanded_tilt:float=0.0; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
+    movement_generation:int=0; ptz_selected_axis:str|None=None; stop_in_progress:bool=False; stop_in_progress_pt:bool=False; stop_in_progress_zoom:bool=False; stop_again_generation:int|None=None; stop_again_pt:bool=False; stop_again_zoom:bool=False; stopped_generation_pt:int|None=None; stopped_generation_zoom:int|None=None; commanded_pan:float=0.0; commanded_tilt:float=0.0; state_lock:threading.Lock=field(default_factory=threading.Lock,repr=False)
     stop_condition:threading.Condition=field(init=False,repr=False)
     def __post_init__(self):
         self.stop_condition=threading.Condition(self.state_lock)
@@ -148,7 +148,7 @@ class Bridge:
         with r.stop_condition:
             r.movement_generation+=1
             r.stop_again_generation=None; r.stop_again_pt=False; r.stop_again_zoom=False
-            r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; r.commanded_pan=0.0; r.commanded_tilt=0.0; self.sync_moving(r)
+            r.moving_pt=False; r.moving_zoom=False; r.stop_deadline_pt=None; r.stop_deadline_zoom=None; r.commanded_pan=0.0; r.commanded_tilt=0.0; r.ptz_selected_axis=None; self.sync_moving(r)
     def safety_stop_once(self,r,expected_generation=None,expected_deadline=None,claim_time=None):
         with r.stop_condition:
             if not r.moving or r.stop_in_progress:return False
@@ -301,6 +301,28 @@ class Bridge:
         self.publish_state(r)
         return
 
+    def normalize_c220_continuous_pt(self,r,pan,tilt):
+        # C220 firmware quirk established on hardware: any non-zero PanTilt.x
+        # makes ContinuousMove operate pan and ignore y. Force a single-axis
+        # vector. Near the diagonal, retain the currently selected axis to
+        # prevent pointer noise from making the camera chatter between motors.
+        ap=abs(pan); at=abs(tilt)
+        if ap<1e-6 and at<1e-6:
+            r.ptz_selected_axis=None
+            return 0.0,0.0
+        if ap<1e-6:
+            axis='tilt'
+        elif at<1e-6:
+            axis='pan'
+        else:
+            ratio=1.20
+            current=r.ptz_selected_axis
+            if current=='pan' and ap*ratio>=at:axis='pan'
+            elif current=='tilt' and at*ratio>=ap:axis='tilt'
+            else:axis='pan' if ap>=at else 'tilt'
+        r.ptz_selected_axis=axis
+        return (pan,0.0) if axis=='pan' else (0.0,tilt)
+
     def execute(self,r,action,d):
         if action=='ptz_test':return self.ptz_test(r,d)
         if action=='ptz':
@@ -362,9 +384,12 @@ class Bridge:
                 tilt_patch=raw_tilt if touch_pt and 'tilt' in d else None,
             )
             succeeded=False
+            send_pan,send_tilt=(pan,tilt)
+            if touch_pt:
+                send_pan,send_tilt=self.normalize_c220_continuous_pt(r,pan,tilt)
             try:
-                logging.debug('%s PTZ ContinuousMove output: pan=%s tilt=%s zoom=%s',r.camera_id,pan if touch_pt else None,tilt if touch_pt else None,zoom if touch_zoom else None)
-                r.client.continuous_move(pan=pan if touch_pt else None,tilt=tilt if touch_pt else None,zoom=zoom if touch_zoom else None)
+                logging.debug('%s PTZ ContinuousMove output: requested=(%s,%s) normalized=(%s,%s) zoom=%s',r.camera_id,pan if touch_pt else None,tilt if touch_pt else None,send_pan if touch_pt else None,send_tilt if touch_pt else None,zoom if touch_zoom else None)
+                r.client.continuous_move(pan=send_pan if touch_pt else None,tilt=send_tilt if touch_pt else None,zoom=zoom if touch_zoom else None)
                 succeeded=True
             finally:
                 with r.stop_condition:
